@@ -2,6 +2,15 @@
 import { Fragment, useMemo, useState } from "react";
 import type { CcusageRow, CcusageTotals } from "@/lib/ccusage";
 
+function projectPathOf(r: CcusageRow): string | undefined {
+  const m = r.metadata as { projectPath?: unknown } | undefined;
+  return typeof m?.projectPath === "string" ? m.projectPath : undefined;
+}
+
+export function rowKey(r: CcusageRow, index: number): string {
+  return `${r.period}::${r.agent}::${projectPathOf(r) ?? index}`;
+}
+
 export default function PeriodTable({ rows, totals }: { rows: CcusageRow[]; totals: CcusageTotals }) {
   const [open, setOpen] = useState<string | null>(null);
   const modelRollup = useMemo(() => {
@@ -18,9 +27,9 @@ export default function PeriodTable({ rows, totals }: { rows: CcusageRow[]; tota
   return (
     <section className="flex flex-col gap-4">
       <div className="rounded-lg border border-gray-200 bg-white p-4">
-        <h2 className="mb-2 font-semibold">Cost by model</h2>
-        <table className="w-full text-sm">
-          <thead><tr className="text-left text-gray-500"><th>Model</th><th className="text-right">Tokens</th><th className="text-right">Cost</th><th className="text-right">Share</th></tr></thead>
+        <h2 className="mb-2 font-semibold text-gray-900">Cost by model</h2>
+        <table className="w-full text-sm text-gray-900">
+          <thead><tr className="text-left text-gray-500"><th scope="col">Model</th><th scope="col" className="text-right">Tokens</th><th scope="col" className="text-right">Cost</th><th scope="col" className="text-right">Share</th></tr></thead>
           <tbody>
             {modelRollup.map(([name, v]) => (
               <tr key={name} className="border-t"><td>{name}</td><td className="text-right">{v.tokens.toLocaleString()}</td><td className="text-right">${v.cost.toFixed(2)}</td><td className="text-right">{totals.totalCost ? `${((v.cost / totals.totalCost) * 100).toFixed(1)}%` : "—"}</td></tr>
@@ -30,31 +39,35 @@ export default function PeriodTable({ rows, totals }: { rows: CcusageRow[]; tota
         </table>
       </div>
       <div className="rounded-lg border border-gray-200 bg-white p-4 overflow-auto">
-        <h2 className="mb-2 font-semibold">Periods ({rows.length})</h2>
-        <table className="w-full text-sm">
-          <thead><tr className="text-left text-gray-500"><th>Period</th><th>Models</th><th className="text-right">Tokens</th><th className="text-right">Cost</th><th></th></tr></thead>
+        <h2 className="mb-2 font-semibold text-gray-900">Periods ({rows.length})</h2>
+        <table className="w-full text-sm text-gray-900">
+          <thead><tr className="text-left text-gray-500"><th scope="col">Period</th><th scope="col">Models</th><th scope="col" className="text-right">Tokens</th><th scope="col" className="text-right">Cost</th><th scope="col"></th></tr></thead>
           <tbody>
-            {rows.map((r) => (
-              <Fragment key={r.period}>
+            {rows.map((r, i) => {
+              const k = rowKey(r, i);
+              const isOpen = open === k;
+              return (
+              <Fragment key={k}>
                 <tr className="border-t">
                   <td className="pr-2">{String(r.period).slice(0, 24)}</td>
                   <td className="pr-2 text-gray-600">{(r.modelsUsed ?? []).join(", ")}</td>
-                  <td className="text-right">{r.totalTokens.toLocaleString()}</td>
-                  <td className="text-right">${r.totalCost.toFixed(2)}</td>
-                  <td className="text-right"><button className="underline" onClick={() => setOpen(open === r.period ? null : r.period)}>{open === r.period ? "hide" : "models"}</button></td>
+                  <td className="text-right">{Number(r.totalTokens ?? 0).toLocaleString()}</td>
+                  <td className="text-right">${Number(r.totalCost ?? 0).toFixed(2)}</td>
+                  <td className="text-right"><button type="button" aria-expanded={isOpen} className="underline text-blue-700 hover:text-blue-900" onClick={() => setOpen(isOpen ? null : k)}>{isOpen ? "hide" : "models"}</button></td>
                 </tr>
-                {open === r.period && (
+                {isOpen && (
                   <tr className="bg-gray-50">
-                    <td colSpan={5} className="p-2 text-xs">
+                    <td colSpan={5} className="p-2 text-xs text-gray-700">
                       {(r.modelBreakdowns ?? []).map((b) => (
                         <div key={b.modelName}>{b.modelName}: in {b.inputTokens.toLocaleString()}, out {b.outputTokens.toLocaleString()}, cache-read {b.cacheReadTokens.toLocaleString()}, ${b.cost.toFixed(2)}</div>
                       ))}
-                      {(r.metadata as { projectPath?: string } | undefined)?.projectPath && <div>project: {String((r.metadata as { projectPath?: string }).projectPath)}</div>}
+                      {projectPathOf(r) && <div>project: {projectPathOf(r)}</div>}
                     </td>
                   </tr>
                 )}
               </Fragment>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

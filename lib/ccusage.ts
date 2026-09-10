@@ -44,8 +44,19 @@ export function isViewKey(v: string): v is ViewKey {
   return (VIEWS as readonly string[]).includes(v);
 }
 
-const DATE_RE = /^\d{4}-?\d{2}-?\d{2}$/;
+const DATE_RE = /^(\d{4})-?(\d{2})-?(\d{2})$/;
 
 export function isDateParam(v: string): boolean {
-  return DATE_RE.test(v);
+  const m = DATE_RE.exec(v);
+  if (!m) return false;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
+export function normalizeDateParam(v: string): string {
+  return v.replaceAll("-", "");
 }

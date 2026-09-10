@@ -19,7 +19,7 @@ export default function SummaryCards({ totals, scannedAt }: { totals: CcusageTot
         {cards.map(([k, v]) => (
           <div key={k} className="rounded-lg border border-gray-200 bg-white p-3">
             <div className="text-xs uppercase text-gray-500">{k}</div>
-            <div className="text-lg font-semibold">{v}</div>
+            <div className="text-lg font-semibold text-gray-900">{v}</div>
           </div>
         ))}
       </div>

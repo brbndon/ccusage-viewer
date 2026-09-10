@@ -1,9 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { isDateParam, isViewKey, type ScanResponse } from "@/lib/ccusage";
+import { isDateParam, isViewKey, normalizeDateParam, type ScanResponse } from "@/lib/ccusage";
 
 const execFileAsync = promisify(execFile);
+
+export const dynamic = "force-dynamic";
+
+const ZERO_TOTALS: ScanResponse["totals"] = {
+  totalCost: 0, totalTokens: 0, inputTokens: 0,
+  outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0,
+};
+
+function isTotals(v: unknown): v is ScanResponse["totals"] {
+  if (typeof v !== "object" || v === null) return false;
+  const t = v as Record<string, unknown>;
+  return ["totalCost", "totalTokens", "inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens"]
+    .every((k) => typeof t[k] === "number" && Number.isFinite(t[k]));
+}
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -20,6 +34,9 @@ export async function GET(req: NextRequest) {
   if (until && !isDateParam(until)) {
     return NextResponse.json({ error: `Invalid until: ${until}` }, { status: 400 });
   }
+  if (since && until && normalizeDateParam(since) > normalizeDateParam(until)) {
+    return NextResponse.json({ error: `Invalid range: since ${since} is after until ${until}` }, { status: 400 });
+  }
 
   const args = ["ccusage", viewRaw, "--json"];
   if (since) args.push("--since", since);
@@ -28,11 +45,15 @@ export async function GET(req: NextRequest) {
   try {
     const { stdout } = await execFileAsync("npx", args, { timeout: 30000, maxBuffer: 32 * 1024 * 1024 });
     const parsed = JSON.parse(stdout) as Record<string, unknown>;
-    const rows = (parsed[viewRaw] ?? parsed["daily"] ?? []) as ScanResponse["rows"];
-    const totals = (parsed["totals"] ?? {
-      totalCost: 0, totalTokens: 0, inputTokens: 0,
-      outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0,
-    }) as ScanResponse["totals"];
+    const rawRows = parsed[viewRaw];
+    if (!Array.isArray(rawRows)) {
+      throw new Error(`unexpected ccusage shape: missing "${viewRaw}" array`);
+    }
+    const rows = rawRows as ScanResponse["rows"];
+    const rawTotals = parsed["totals"];
+    const totals = rawTotals === undefined ? ZERO_TOTALS
+      : isTotals(rawTotals) ? rawTotals
+      : (() => { throw new Error("unexpected ccusage shape: malformed totals"); })();
     const body: ScanResponse = { view: viewRaw, rows, totals, scannedAt: new Date().toISOString() };
     return NextResponse.json(body);
   } catch (err: unknown) {
