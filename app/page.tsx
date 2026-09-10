@@ -42,7 +42,10 @@ export default function Home() {
         onViewChange={setView} onSinceChange={setSince} onUntilChange={setUntil} onScan={scan} />
       {error && <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error} <button onClick={scan} className="underline font-semibold">Retry</button></div>}
       {!data && !error && <p className="text-gray-500 text-sm">Press Scan to load {view} usage.</p>}
-      {data && (
+      {data && data.rows.length === 0 && (
+        <p className="rounded border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">No {view} data returned by ccusage (e.g. no active billing block). Try another view.</p>
+      )}
+      {data && data.rows.length > 0 && (
         <>
           <SummaryCards totals={data.totals} scannedAt={data.scannedAt} />
           <CostChart rows={data.rows} />
