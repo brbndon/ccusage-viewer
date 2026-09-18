@@ -41,8 +41,15 @@ export default function ScanControls(p: Props) {
           type="button"
           onClick={p.onScan}
           disabled={p.loading}
-          className="rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+          aria-busy={p.loading}
+          className="flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white hover:bg-blue-700 disabled:cursor-wait disabled:opacity-70"
         >
+          {p.loading && (
+            <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
+            </svg>
+          )}
           {p.loading ? "Scanning…" : "Scan"}
         </button>
       </div>

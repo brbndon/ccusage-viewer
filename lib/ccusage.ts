@@ -38,6 +38,21 @@ export interface ScanResponse {
   rows: CcusageRow[];
   totals: CcusageTotals;
   scannedAt: string;
+  /** Engine provenance. Optional so older cached responses still satisfy the type. */
+  engine?: ScanEngine;
+}
+
+export interface ScanEngine {
+  /** Package spec actually executed, e.g. "ccusage@20.0.23". */
+  spec: string;
+  /**
+   * True when spec was pinned to the registry's `latest` at scan time.
+   * False means the registry was unreachable and npx fell back to the
+   * `ccusage@latest` tag, which may serve a stale cache entry.
+   */
+  pinned: boolean;
+  /** Resolved version when pinned; null when unverified (fallback path). */
+  version: string | null;
 }
 
 export function isViewKey(v: string): v is ViewKey {
