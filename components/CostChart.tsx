@@ -12,6 +12,18 @@ import {
 import type { CcusageRow } from "@/lib/ccusage";
 import { formatCompactNumber, formatMoney } from "@/lib/model-meta";
 
+function formatChartMoney(amount: number): string {
+  if (!Number.isFinite(amount) || Math.abs(amount) >= 0.01) {
+    return formatMoney(amount);
+  }
+
+  const formatted = Math.abs(amount).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 8,
+  });
+  return amount < 0 ? `-$${formatted}` : `$${formatted}`;
+}
+
 interface TooltipPayloadItem {
   value: number;
   payload: {
@@ -39,7 +51,7 @@ function CustomTooltip({
       <div className="mt-1 flex items-center justify-between gap-4">
         <span className="text-slate-400">Cost:</span>
         <span className="num-tabular font-bold text-emerald-400">
-          {formatMoney(data.cost)}
+          {formatChartMoney(data.cost)}
         </span>
       </div>
       <div className="flex items-center justify-between gap-4">
@@ -56,7 +68,7 @@ export default function CostChart({ rows }: { rows: CcusageRow[] }) {
   const chartedRows = rows.slice(-30);
   const data = chartedRows.map((r) => ({
     name: String(r.period ?? "").slice(0, 10),
-    cost: Number(Number(r.totalCost ?? 0).toFixed(2)),
+    cost: Number(r.totalCost ?? 0),
     tokens: Number(r.totalTokens ?? 0),
   }));
 
@@ -93,13 +105,13 @@ export default function CostChart({ rows }: { rows: CcusageRow[] }) {
           <div className="flex items-center gap-1.5">
             <span className="text-slate-400">Avg:</span>
             <span className="num-tabular font-semibold text-slate-700">
-              {formatMoney(avg)}
+              {formatChartMoney(avg)}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-slate-400">Peak:</span>
             <span className="num-tabular font-semibold text-amber-600">
-              {formatMoney(peak)}
+              {formatChartMoney(peak)}
             </span>
           </div>
         </div>
@@ -120,7 +132,7 @@ export default function CostChart({ rows }: { rows: CcusageRow[] }) {
               tick={{ fontSize: 11, fill: "#64748b" }}
               axisLine={false}
               tickLine={false}
-              tickFormatter={(val: number) => `$${val}`}
+              tickFormatter={formatChartMoney}
               width={55}
             />
             <Tooltip content={<CustomTooltip />} cursor={{ fill: "#f8fafc" }} />
