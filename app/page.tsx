@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ScanControls from "@/components/ScanControls";
 import ScanProgress, { formatElapsed } from "@/components/ScanProgress";
 import SummaryCards from "@/components/SummaryCards";
 import CostChart from "@/components/CostChart";
+import ExportActions from "@/components/ExportActions";
 import PeriodTable from "@/components/PeriodTable";
 import type {
   CcusageRow,
@@ -13,7 +14,13 @@ import type {
   ScanResponse,
   ViewKey,
 } from "@/lib/ccusage";
-import { PROVIDERS, ZERO_TOTALS } from "@/lib/ccusage";
+import {
+  isProviderSlug,
+  isViewKey,
+  isViewSupportedByProviders,
+  PROVIDERS,
+  ZERO_TOTALS,
+} from "@/lib/ccusage";
 import { formatMoney, parseModelMeta } from "@/lib/model-meta";
 
 /** Progress timer tick: 2 renders/sec keeps the elapsed readout alive without churning. */
@@ -22,6 +29,49 @@ const PROGRESS_TICK_MS = 500;
 const DEFAULT_PROVIDERS: ProviderSlug[] = PROVIDERS.filter(
   (p) => p !== "antigravity"
 );
+const PREFERENCES_KEY = "ccusage-viewer.preferences.v1";
+
+interface SavedPreferences {
+  view: ViewKey;
+  providers: "all" | ProviderSlug[];
+}
+
+function readPreferences(): SavedPreferences | null {
+  try {
+    const raw = window.localStorage.getItem(PREFERENCES_KEY);
+    if (!raw) return null;
+
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const value = parsed as Record<string, unknown>;
+    if (value.version !== 1 || typeof value.view !== "string" || !isViewKey(value.view)) {
+      return null;
+    }
+
+    if (value.providers === "all") {
+      return { view: value.view, providers: "all" };
+    }
+    if (
+      Array.isArray(value.providers) &&
+      value.providers.every((provider) => typeof provider === "string" && isProviderSlug(provider))
+    ) {
+      return { view: value.view, providers: value.providers };
+    }
+  } catch {
+    // Preferences are optional; ignore unavailable storage or malformed JSON.
+  }
+  return null;
+}
+
+function describeRange(since: string, until: string): string {
+  if (!since && !until) return "All history";
+  return `${since || "Any start"} → ${until || "Latest"}`;
+}
+
+function describeProviders(providerList?: string[]): string {
+  if (!providerList?.length) return "Unknown providers";
+  return providerList.includes("all") ? "All providers" : providerList.join(", ");
+}
 
 function ScanSkeleton() {
   return (
@@ -64,13 +114,16 @@ export default function Home() {
   const [providers, setProviders] = useState<"all" | ProviderSlug[]>(
     DEFAULT_PROVIDERS
   );
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [scanCancelled, setScanCancelled] = useState(false);
   const [data, setData] = useState<ScanResponse | null>(null);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [lastDurationSec, setLastDurationSec] = useState<number | null>(null);
   const [lastEngine, setLastEngine] = useState<ScanEngine | null>(null);
+  const [lastSuccessfulRange, setLastSuccessfulRange] = useState({ since: "", until: "" });
 
   const [scanQuery, setScanQuery] = useState<{
     view: ViewKey;
@@ -87,8 +140,59 @@ export default function Home() {
   const [announcement, setAnnouncement] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const reqIdRef = useRef(0);
+  const modelFilterRef = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const saved = readPreferences();
+      if (saved) {
+        setView(saved.view);
+        setProviders(saved.providers);
+      }
+      setPreferencesLoaded(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    try {
+      window.localStorage.setItem(
+        PREFERENCES_KEY,
+        JSON.stringify({ version: 1, view, providers })
+      );
+    } catch {
+      // Preferences are optional; storage can be disabled or full.
+    }
+  }, [preferencesLoaded, providers, view]);
+
+  useEffect(() => {
+    function closeOnOutsidePointer(event: PointerEvent) {
+      const details = modelFilterRef.current;
+      if (!details) return;
+      if (details.open && event.target instanceof Node && !details.contains(event.target)) {
+        details.open = false;
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      const details = modelFilterRef.current;
+      if (!details) return;
+      if (event.key !== "Escape" || !details.open) return;
+      event.preventDefault();
+      details.open = false;
+      details.querySelector("summary")?.focus();
+    }
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
 
   useEffect(() => {
     if (!loading) return;
@@ -101,10 +205,14 @@ export default function Home() {
   }, [loading]);
 
   function cancel() {
+    setScanCancelled(true);
+    setAnnouncement(
+      data ? "Scan cancelled. The previous scan is unchanged." : "Scan cancelled."
+    );
     abortRef.current?.abort();
   }
 
-  async function scan() {
+  const scan = useCallback(async () => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -113,6 +221,7 @@ export default function Home() {
     setLoading(true);
     setElapsedSec(0);
     setError("");
+    setScanCancelled(false);
     setAnnouncement("");
     setScanQuery({ view, since, until, providers });
 
@@ -158,6 +267,8 @@ export default function Home() {
 
         setLastDurationSec(durSec);
         setLastEngine(done.engine ?? null);
+        setLastSuccessfulRange({ since, until });
+        setScanCancelled(false);
         setAnnouncement(
           `${done.view} scan complete: ${done.rows.length} rows in ${formatElapsed(durSec)}, at ${new Date(done.scannedAt).toLocaleTimeString()}.`
         );
@@ -170,7 +281,34 @@ export default function Home() {
     } finally {
       if (reqIdRef.current === reqId) setLoading(false);
     }
-  }
+  }, [providers, since, until, view]);
+
+  useEffect(() => {
+    function handleScanShortcut(event: KeyboardEvent) {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.altKey ||
+        event.shiftKey ||
+        (event.key !== "Enter" && event.key !== "NumpadEnter")
+      ) {
+        return;
+      }
+
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target?.closest("input:not([type='date']), textarea, select, [contenteditable='true']")) {
+        return;
+      }
+
+      const canScan = providers === "all" || isViewSupportedByProviders(view, providers);
+      if (loading || !canScan) return;
+
+      event.preventDefault();
+      void scan();
+    }
+
+    window.addEventListener("keydown", handleScanShortcut);
+    return () => window.removeEventListener("keydown", handleScanShortcut);
+  }, [loading, providers, scan, view]);
 
   // Derive model list from current loaded data
   const allModels = useMemo(() => {
@@ -213,6 +351,10 @@ export default function Home() {
   const { displayRows, displayTotals } = useMemo(() => {
     if (!data?.rows) {
       return { displayRows: [], displayTotals: ZERO_TOTALS };
+    }
+
+    if (allModels.length === 0) {
+      return { displayRows: data.rows, displayTotals: data.totals };
     }
 
     if (selectedModels.length === 0) {
@@ -307,6 +449,13 @@ export default function Home() {
 
   const showEmptyHint = !data && !error && !loading;
   const showFirstScanSkeleton = loading && !data && !error;
+  const showNoScanRows = !!data && data.rows.length === 0 && !error && !loading;
+  const showNoModelsSelected =
+    !!data &&
+    data.rows.length > 0 &&
+    allModels.length > 0 &&
+    selectedModels.length === 0 &&
+    !loading;
 
   const isSlowScan =
     scanQuery.providers === "all" ||
@@ -331,7 +480,11 @@ export default function Home() {
           </p>
         </div>
 
-        {lastDurationSec !== null && !loading && (
+        {scanCancelled && !loading ? (
+          <div role="status" className="text-xs font-medium text-amber-700">
+            {data ? "Scan cancelled · previous scan kept" : "Scan cancelled"}
+          </div>
+        ) : lastDurationSec !== null && !loading ? (
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
             <span>Scan took {formatElapsed(lastDurationSec)}</span>
@@ -341,7 +494,7 @@ export default function Home() {
               </span>
             )}
           </div>
-        )}
+        ) : null}
       </header>
 
       {/* Primary Scan Controls Card */}
@@ -354,6 +507,10 @@ export default function Home() {
         onViewChange={setView}
         onSinceChange={setSince}
         onUntilChange={setUntil}
+        onDateRangeChange={(nextSince, nextUntil) => {
+          setSince(nextSince);
+          setUntil(nextUntil);
+        }}
         onProvidersChange={setProviders}
         onScan={scan}
       />
@@ -365,20 +522,18 @@ export default function Home() {
       )}
 
       {loading && (
-        <div className="relative [&_p.mt-2.text-xs.text-gray-500]:hidden">
+        <div>
           <ScanProgress
             view={scanQuery.view}
             since={scanQuery.since}
             until={scanQuery.until}
             elapsedSec={elapsedSec}
             hasPreviousData={data !== null && data.rows.length > 0}
+            reassurance={isSlowScan
+              ? "Full-history scans can take 60–120s while ccusage reads local usage history. You can keep using the page while this runs."
+              : "Provider-scoped scans usually finish in seconds. You can keep using the page while this runs."}
             onCancel={cancel}
           />
-          <p className="-mt-6 mb-4 px-4 text-xs text-slate-500 sm:ml-8">
-            {isSlowScan
-              ? "Full-history scans routinely take 60–120s while ccusage reads your local usage history — the wait is the history scan, not the download. You can keep browsing — results appear automatically."
-              : "Provider-scoped scans usually finish in seconds."}
-          </p>
         </div>
       )}
 
@@ -406,17 +561,29 @@ export default function Home() {
 
       {showEmptyHint && (
         <div className="rounded-xl border border-dashed border-slate-200 bg-white/60 p-8 text-center text-sm text-slate-500">
-          Press <span className="font-semibold text-slate-800">Scan Usage</span> to load your {view} token usage and costs.
+          <span className="font-semibold text-slate-800">Scan Usage</span> runs the local ccusage CLI for your selected providers and date range, then shows {view} usage, costs, and trends here.
         </div>
       )}
 
       {showFirstScanSkeleton && <ScanSkeleton />}
 
-      {data && !error && displayRows.length === 0 && !loading && (
-        <p className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600 shadow-xs">
-          No {view} data returned by ccusage (e.g. no active billing block). Try
-          another view or date range.
+      {showNoScanRows && (
+        <p role="status" className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600 shadow-xs">
+          No {data.view} usage rows were returned for {describeRange(lastSuccessfulRange.since, lastSuccessfulRange.until)}. Try another view or date range.
         </p>
+      )}
+
+      {showNoModelsSelected && (
+        <div className="flex flex-wrap items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600 shadow-xs">
+          <span aria-live="polite">No models are selected, so the results are hidden.</span>
+          <button
+            type="button"
+            onClick={() => setSelectedModels([...allModels])}
+            className="btn-press rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-100"
+          >
+            Select all models
+          </button>
+        </div>
       )}
 
       {data && data.rows.length > 0 && (
@@ -424,7 +591,7 @@ export default function Home() {
           aria-busy={loading}
           className={
             loading
-              ? "pointer-events-none select-none opacity-60 saturate-50"
+              ? "opacity-60 saturate-50"
               : undefined
           }
         >
@@ -436,11 +603,11 @@ export default function Home() {
                   <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                     Filter Models:
                   </span>
-                  <details className="relative">
+                  <details ref={modelFilterRef} className="relative">
                     <summary className="btn-press cursor-pointer select-none rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50">
                       Models ({selectedModels.length}/{allModels.length}) ▾
                     </summary>
-                    <div className="absolute left-0 z-20 mt-1.5 max-h-80 min-w-[340px] overflow-auto rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
+                    <div className="absolute left-0 z-20 mt-1.5 max-h-80 w-[min(22rem,calc(100vw-3rem))] overflow-auto rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
                       <div className="mb-2 flex items-center justify-between border-b border-slate-100 pb-2 text-xs">
                         <div className="flex gap-2">
                           <button
@@ -520,20 +687,51 @@ export default function Home() {
                   </details>
                 </div>
 
-                <div className="flex items-center gap-2 text-xs text-slate-500">
-                  <span>
-                    {selectedModels.length} of {allModels.length} models active
-                  </span>
-                  {selectedModels.length < allModels.length && (
-                    <button
-                      type="button"
-                      onClick={() => setSelectedModels([...allModels])}
-                      className="btn-press font-semibold text-blue-600 hover:underline"
-                    >
-                      (Reset filter)
-                    </button>
+                <div className="flex flex-wrap items-center justify-end gap-3">
+                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <span>
+                      {selectedModels.length} of {allModels.length} models active
+                    </span>
+                    {selectedModels.length < allModels.length && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedModels([...allModels])}
+                        className="btn-press font-semibold text-blue-600 hover:underline"
+                      >
+                        Reset filter
+                      </button>
+                    )}
+                  </div>
+                  {displayRows.length > 0 && data && (
+                    <ExportActions
+                      rows={displayRows}
+                      totals={displayTotals}
+                      view={data.view}
+                      scannedAt={data.scannedAt}
+                      rangeLabel={describeRange(lastSuccessfulRange.since, lastSuccessfulRange.until)}
+                      providersLabel={describeProviders(data.providers)}
+                    />
                   )}
                 </div>
+              </div>
+            )}
+
+            {allModels.length > 0 && (
+              <p className="-mt-3 text-xs text-slate-500">
+                Showing {data.view} results · {describeProviders(data.providers)} · {describeRange(lastSuccessfulRange.since, lastSuccessfulRange.until)}
+              </p>
+            )}
+
+            {allModels.length === 0 && displayRows.length > 0 && (
+              <div className="flex justify-end">
+                <ExportActions
+                  rows={displayRows}
+                  totals={displayTotals}
+                  view={data.view}
+                  scannedAt={data.scannedAt}
+                  rangeLabel={describeRange(lastSuccessfulRange.since, lastSuccessfulRange.until)}
+                  providersLabel={describeProviders(data.providers)}
+                />
               </div>
             )}
 

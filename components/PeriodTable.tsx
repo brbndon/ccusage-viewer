@@ -479,14 +479,16 @@ export default function PeriodTable({
                               )}
                             </div>
 
-                            <table className="w-full text-left text-xs">
+                            <div className="overflow-x-auto">
+                              <table className="w-full min-w-[640px] text-left text-xs">
                               <thead>
                                 <tr className="border-b border-slate-100 font-semibold text-slate-500">
-                                  <th className="py-1.5 pr-2">Model</th>
-                                  <th className="py-1.5 text-right">Input</th>
-                                  <th className="py-1.5 text-right">Output</th>
-                                  <th className="py-1.5 text-right">Cache Read</th>
-                                  <th className="py-1.5 pl-2 text-right">Cost</th>
+                                  <th scope="col" className="py-1.5 pr-2">Model</th>
+                                  <th scope="col" className="py-1.5 text-right">Input</th>
+                                  <th scope="col" className="py-1.5 text-right">Output</th>
+                                  <th scope="col" className="py-1.5 text-right">Cache Create</th>
+                                  <th scope="col" className="py-1.5 text-right">Cache Read</th>
+                                  <th scope="col" className="py-1.5 pl-2 text-right">Cost</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
@@ -513,6 +515,9 @@ export default function PeriodTable({
                                         {formatCompactNumber(b.outputTokens)}
                                       </td>
                                       <td className="num-tabular py-1.5 text-right text-slate-600">
+                                        {formatCompactNumber(b.cacheCreationTokens)}
+                                      </td>
+                                      <td className="num-tabular py-1.5 text-right text-slate-600">
                                         {formatCompactNumber(b.cacheReadTokens)}
                                       </td>
                                       <td className="num-tabular py-1.5 pl-2 text-right font-semibold text-slate-900">
@@ -522,7 +527,8 @@ export default function PeriodTable({
                                   );
                                 })}
                               </tbody>
-                            </table>
+                              </table>
+                            </div>
                           </div>
                         </td>
                       </tr>

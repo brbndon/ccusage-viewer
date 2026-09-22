@@ -6,6 +6,7 @@ interface Props {
   until: string;
   elapsedSec: number;
   hasPreviousData: boolean;
+  reassurance: string;
   onCancel: () => void;
 }
 
@@ -35,7 +36,15 @@ export function formatElapsed(totalSec: number): string {
   return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
 }
 
-export default function ScanProgress({ view, since, until, elapsedSec, hasPreviousData, onCancel }: Props) {
+export default function ScanProgress({
+  view,
+  since,
+  until,
+  elapsedSec,
+  hasPreviousData,
+  reassurance,
+  onCancel,
+}: Props) {
   const active = stepFor(elapsedSec);
   const range = since || until ? `${since || "…"} → ${until || "now"}` : "all history";
 
@@ -122,11 +131,7 @@ export default function ScanProgress({ view, since, until, elapsedSec, hasPrevio
             })}
           </ol>
 
-          <p className="mt-2 text-xs text-gray-500">
-            Full-history scans routinely take 60–120s while ccusage reads your
-            local usage history — the wait is the history scan, not the
-            download. You can keep browsing — results appear automatically.
-          </p>
+          <p className="mt-3 text-xs text-gray-600">{reassurance}</p>
         </div>
       </div>
     </section>
