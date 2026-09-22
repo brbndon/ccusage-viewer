@@ -1,8 +1,10 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   color-scheme: light;
 }
 
@@ -13,13 +15,29 @@
   --font-mono: var(--font-geist-mono);
 }
 
-/* App surfaces are hard-coded light (bg-white cards); keep the page light even
-   in dark-mode OS settings. Full dark-mode polish is deferred to v2. */
-
+/* Hard-coded light theme with rich slate hierarchy */
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Button & interactive press microinteraction */
+.btn-press {
+  transition: transform 140ms var(--ease-out), box-shadow 140ms var(--ease-out), background-color 140ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn-press:active {
+    transform: scale(0.97);
+  }
+}
+
+/* Tabular numbers for financial and metric data */
+.num-tabular {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 
 /* Indeterminate scan progress: sweeps left→right since ccusage streams no %. */
@@ -36,6 +54,9 @@ body {
   .scan-progress-bar {
     animation: none;
     width: 100%;
+  }
+  .btn-press {
+    transition: none !important;
   }
 }
 

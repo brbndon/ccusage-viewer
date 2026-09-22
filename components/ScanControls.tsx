@@ -1,4 +1,5 @@
 "use client";
+
 import type { ProviderSlug, ViewKey } from "@/lib/ccusage";
 import { PROVIDERS, VIEW_SUPPORT, VIEWS } from "@/lib/ccusage";
 
@@ -66,12 +67,42 @@ export default function ScanControls(p: Props) {
         );
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4 rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs">
       {/* Provider Selector */}
-      <div className="flex flex-col gap-1.5">
-        <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-          Providers
-        </span>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Target Providers
+          </span>
+          <div className="flex items-center gap-1 text-xs">
+            <button
+              type="button"
+              onClick={() => p.onProvidersChange("all")}
+              className={`btn-press rounded border px-2 py-0.5 font-medium transition-colors ${
+                isAll
+                  ? "border-amber-500 bg-amber-50 text-amber-900"
+                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              All incl. slow
+            </button>
+            <button
+              type="button"
+              onClick={() => p.onProvidersChange(DEFAULT_PROVIDERS)}
+              className="btn-press rounded border border-slate-200 bg-white px-2 py-0.5 text-slate-600 hover:bg-slate-50"
+            >
+              Reset default
+            </button>
+            <button
+              type="button"
+              onClick={() => p.onProvidersChange([])}
+              className="btn-press rounded border border-slate-200 bg-white px-2 py-0.5 text-slate-600 hover:bg-slate-50"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
         <div className="flex flex-wrap items-center gap-2">
           {MAIN_PROVIDERS.map((slug) => {
             const active = isProviderSelected(slug);
@@ -80,10 +111,10 @@ export default function ScanControls(p: Props) {
                 key={slug}
                 type="button"
                 onClick={() => toggleProvider(slug)}
-                className={`rounded-full border px-3 py-1 text-sm font-medium transition-colors ${
+                className={`btn-press rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
                   active
-                    ? "border-blue-600 bg-blue-50 text-blue-800"
-                    : "border-gray-300 bg-white text-gray-700 hover:border-gray-400"
+                    ? "border-blue-600 bg-blue-50 text-blue-800 shadow-2xs"
+                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
                 }`}
               >
                 {active ? "✓ " : ""}
@@ -97,7 +128,7 @@ export default function ScanControls(p: Props) {
               key={slug}
               type="button"
               onClick={() => toggleProvider(slug)}
-              className="flex items-center gap-1 rounded-full border border-blue-600 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-800"
+              className="btn-press flex items-center gap-1 rounded-full border border-blue-600 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-800 shadow-2xs"
               title="Click to remove"
             >
               <span>✓ {slug}</span>
@@ -112,7 +143,7 @@ export default function ScanControls(p: Props) {
                 toggleProvider(e.target.value as ProviderSlug);
               }
             }}
-            className="rounded-full border border-gray-300 bg-white px-3 py-1 text-sm text-gray-700 hover:border-gray-400"
+            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 hover:border-slate-300 focus:outline-hidden"
           >
             <option value="">
               + More providers ({selectedOverflow.length} selected)
@@ -127,121 +158,102 @@ export default function ScanControls(p: Props) {
               );
             })}
           </select>
-
-          <div className="flex items-center gap-1.5 pl-2 text-xs">
-            <button
-              type="button"
-              onClick={() => p.onProvidersChange("all")}
-              className={`rounded px-2 py-1 font-medium border ${
-                isAll
-                  ? "border-amber-500 bg-amber-50 text-amber-900"
-                  : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
-              }`}
-            >
-              All incl. slow
-            </button>
-            <button
-              type="button"
-              onClick={() => p.onProvidersChange(DEFAULT_PROVIDERS)}
-              className="rounded border border-gray-300 bg-white px-2 py-1 text-gray-600 hover:bg-gray-50"
-            >
-              Reset to default
-            </button>
-            <button
-              type="button"
-              onClick={() => p.onProvidersChange([])}
-              className="rounded border border-gray-300 bg-white px-2 py-1 text-gray-600 hover:bg-gray-50"
-            >
-              Clear
-            </button>
-          </div>
         </div>
       </div>
 
-      {/* View buttons with matrix gating */}
-      <div className="flex flex-wrap gap-2">
-        {VIEWS.map((v) => {
-          const conflict = getViewConflict(v);
-          const disabled = !!conflict;
-          return (
-            <button
-              key={v}
-              type="button"
-              onClick={() => p.onViewChange(v)}
-              disabled={disabled}
-              title={conflict ?? undefined}
-              className={`rounded-full border px-4 py-1.5 text-sm font-medium transition-opacity ${
-                p.view === v
-                  ? "border-black bg-black text-white"
-                  : disabled
-                    ? "cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400 opacity-60"
-                    : "border-gray-300 bg-white text-gray-700 hover:border-gray-500"
-              }`}
-            >
-              {v}
-            </button>
-          );
-        })}
-      </div>
+      <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-3">
+        {/* View mode toggle */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+            Granularity:
+          </span>
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+            {VIEWS.map((v) => {
+              const conflict = getViewConflict(v);
+              const disabled = !!conflict;
+              const active = p.view === v;
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => p.onViewChange(v)}
+                  disabled={disabled}
+                  title={conflict ?? undefined}
+                  className={`btn-press rounded-md px-3 py-1 text-xs font-semibold transition-colors ${
+                    active
+                      ? "bg-white text-slate-900 shadow-xs"
+                      : disabled
+                      ? "cursor-not-allowed text-slate-300 opacity-50"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  {v.charAt(0).toUpperCase() + v.slice(1)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
-      {/* Date controls and Scan button */}
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col text-sm text-gray-600">
-          Since
-          <input
-            type="date"
-            value={p.since}
-            onChange={(e) => p.onSinceChange(e.target.value)}
-            className="rounded border border-gray-300 px-2 py-1.5 text-gray-900"
-          />
-        </label>
-        <label className="flex flex-col text-sm text-gray-600">
-          Until
-          <input
-            type="date"
-            value={p.until}
-            onChange={(e) => p.onUntilChange(e.target.value)}
-            className="rounded border border-gray-300 px-2 py-1.5 text-gray-900"
-          />
-        </label>
-        <div className="flex flex-col">
-          <button
-            type="button"
-            onClick={p.onScan}
-            disabled={isScanDisabled}
-            aria-busy={p.loading}
-            title={currentViewConflict ?? undefined}
-            className="flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {p.loading && (
-              <svg
-                className="h-4 w-4 animate-spin"
-                viewBox="0 0 24 24"
-                fill="none"
-                aria-hidden="true"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-90"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z"
-                />
-              </svg>
+        {/* Date range & Scan CTA */}
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col text-xs font-medium text-slate-500">
+            <span>Since</span>
+            <input
+              type="date"
+              value={p.since}
+              onChange={(e) => p.onSinceChange(e.target.value)}
+              className="mt-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 focus:border-blue-500 focus:outline-hidden"
+            />
+          </label>
+          <label className="flex flex-col text-xs font-medium text-slate-500">
+            <span>Until</span>
+            <input
+              type="date"
+              value={p.until}
+              onChange={(e) => p.onUntilChange(e.target.value)}
+              className="mt-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 focus:border-blue-500 focus:outline-hidden"
+            />
+          </label>
+
+          <div className="flex flex-col">
+            <button
+              type="button"
+              onClick={p.onScan}
+              disabled={isScanDisabled}
+              aria-busy={p.loading}
+              title={currentViewConflict ?? undefined}
+              className="btn-press flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {p.loading && (
+                <svg
+                  className="h-3.5 w-3.5 animate-spin"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-90"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z"
+                  />
+                </svg>
+              )}
+              <span>{p.loading ? "Scanning…" : "Scan Usage"}</span>
+            </button>
+            {currentViewConflict && (
+              <span className="mt-1 text-[11px] text-red-600">
+                {currentViewConflict}
+              </span>
             )}
-            {p.loading ? "Scanning…" : "Scan"}
-          </button>
-          {currentViewConflict && (
-            <span className="mt-1 text-xs text-red-600">
-              {currentViewConflict}
-            </span>
-          )}
+          </div>
         </div>
       </div>
     </div>
