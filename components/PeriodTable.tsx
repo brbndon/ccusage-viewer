@@ -387,7 +387,7 @@ export default function PeriodTable({
                         <div className="flex items-center gap-1.5">
                           <span>{String(r.period).slice(0, 24)}</span>
                           {isPeak && (
-                            <span className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.2 text-[10px] font-bold uppercase tracking-wider text-amber-800">
+                            <span className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-800">
                               Peak
                             </span>
                           )}
@@ -427,7 +427,7 @@ export default function PeriodTable({
                         <div className="flex items-center justify-end gap-2">
                           <div className="h-1.5 w-12 overflow-hidden rounded-full bg-slate-100">
                             <div
-                              style={{ width: `${Math.max(4, costIntensity)}%` }}
+                              style={{ width: r.totalCost > 0 ? `${Math.max(4, costIntensity)}%` : "0%" }}
                               className={`h-full rounded-full ${
                                 isPeak
                                   ? "bg-amber-500"
@@ -497,7 +497,7 @@ export default function PeriodTable({
                                       <td className="py-1.5 pr-2">
                                         <div className="flex items-center gap-1.5">
                                           <span
-                                            className={`inline-flex rounded-xs border px-1 py-0.2 text-[10px] font-semibold ${meta.badgeClass}`}
+                                            className={`inline-flex rounded-xs border px-1 py-0.5 text-[10px] font-semibold ${meta.badgeClass}`}
                                           >
                                             {meta.provider}
                                           </span>

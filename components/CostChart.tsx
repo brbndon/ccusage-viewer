@@ -78,10 +78,10 @@ export default function CostChart({ rows }: { rows: CcusageRow[] }) {
   const avg = data.length > 0 ? sum / data.length : 0;
 
   return (
-    <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs">
+    <section aria-labelledby="cost-timeline-heading" className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
         <div>
-          <h2 className="text-base font-semibold text-slate-900">
+          <h2 id="cost-timeline-heading" className="text-base font-semibold text-slate-900">
             Cost Timeline
           </h2>
           <p className="text-xs text-slate-500">

@@ -118,11 +118,13 @@ export function formatCompactNumber(n: number): string {
   return n.toLocaleString('en-US');
 }
 
-/** Formats currency with clean decimal handling */
+/** Formats currency with clean decimal handling and standard negative formatting */
 export function formatMoney(n: number): string {
-  if (isNaN(n)) return '$0.00';
-  return `$${n.toLocaleString('en-US', {
+  if (!Number.isFinite(n)) return '$0.00';
+  const abs = Math.abs(n);
+  const formatted = abs.toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  })}`;
+  });
+  return n < 0 ? `-$${formatted}` : `$${formatted}`;
 }

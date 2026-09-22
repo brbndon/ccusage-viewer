@@ -495,7 +495,7 @@ export default function Home() {
                                   className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                                 />
                                 <span
-                                  className={`rounded-xs border px-1 py-0.2 text-[10px] font-semibold ${meta.badgeClass}`}
+                                  className={`rounded-xs border px-1 py-0.5 text-[10px] font-semibold ${meta.badgeClass}`}
                                 >
                                   {meta.provider}
                                 </span>

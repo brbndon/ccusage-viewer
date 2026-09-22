@@ -70,7 +70,7 @@ export default function SummaryCards({
                 Effective Rate
               </span>
               <span className="num-tabular text-sm font-semibold text-slate-800">
-                ${costPerMillion.toFixed(3)}
+                ${Number.isFinite(costPerMillion) ? costPerMillion.toFixed(3) : "0.000"}
                 <span className="text-xs font-normal text-slate-500"> / Mtok</span>
               </span>
             </div>
@@ -111,7 +111,11 @@ export default function SummaryCards({
               >
                 <span
                   className={`h-1.5 w-1.5 rounded-full ${
-                    cacheHitRate >= 80 ? "bg-emerald-500" : "bg-sky-500"
+                    cacheHitRate >= 80
+                      ? "bg-emerald-500"
+                      : cacheHitRate >= 50
+                      ? "bg-sky-500"
+                      : "bg-slate-400"
                   }`}
                 />
                 <span>{cacheHitRate.toFixed(1)}% Cache Hit</span>
@@ -128,9 +132,8 @@ export default function SummaryCards({
             {/* Stacked Proportional Distribution Bar */}
             <div className="mt-3">
               <div
-                role="progressbar"
-                aria-label="Token breakdown proportions"
-                aria-valuenow={100}
+                role="img"
+                aria-label={`Token breakdown: ${cachePct.toFixed(1)}% cache read, ${inputPct.toFixed(1)}% input, ${outputPct.toFixed(1)}% output, ${cacheCreatePct.toFixed(1)}% cache create`}
                 className="flex h-2.5 w-full overflow-hidden rounded-full bg-slate-100"
               >
                 {cachePct > 0 && (
