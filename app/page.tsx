@@ -5,6 +5,7 @@ import ScanProgress, { formatElapsed } from "@/components/ScanProgress";
 import SummaryCards from "@/components/SummaryCards";
 import CostChart from "@/components/CostChart";
 import ExportActions from "@/components/ExportActions";
+import AgentBreakdown from "@/components/AgentBreakdown";
 import PeriodTable from "@/components/PeriodTable";
 import type {
   CcusageRow,
@@ -61,6 +62,15 @@ function readPreferences(): SavedPreferences | null {
     // Preferences are optional; ignore unavailable storage or malformed JSON.
   }
   return null;
+}
+
+/** Model names in first-seen order, taken from per-model breakdowns (the only data the filter can split). */
+function breakdownModels(rows: CcusageRow[]): string[] {
+  const seen = new Set<string>();
+  for (const r of rows) {
+    for (const b of r.modelBreakdowns ?? []) seen.add(b.modelName);
+  }
+  return [...seen];
 }
 
 function describeRange(since: string, until: string): string {
@@ -124,6 +134,7 @@ export default function Home() {
   const [lastDurationSec, setLastDurationSec] = useState<number | null>(null);
   const [lastEngine, setLastEngine] = useState<ScanEngine | null>(null);
   const [lastSuccessfulRange, setLastSuccessfulRange] = useState({ since: "", until: "" });
+  const [rawOutputOpen, setRawOutputOpen] = useState(false);
 
   const [scanQuery, setScanQuery] = useState<{
     view: ViewKey;
@@ -252,18 +263,8 @@ export default function Home() {
         const durSec = Math.round((Date.now() - started) / 1000);
         setData(done);
 
-        // Derive models in first-seen order and select all by default
-        const modelsFromData: string[] = [];
-        const seen = new Set<string>();
-        for (const r of done.rows) {
-          for (const m of r.modelsUsed ?? []) {
-            if (!seen.has(m)) {
-              seen.add(m);
-              modelsFromData.push(m);
-            }
-          }
-        }
-        setSelectedModels(modelsFromData);
+        // Select every model by default
+        setSelectedModels(breakdownModels(done.rows));
 
         setLastDurationSec(durSec);
         setLastEngine(done.engine ?? null);
@@ -311,40 +312,27 @@ export default function Home() {
   }, [loading, providers, scan, view]);
 
   // Derive model list from current loaded data
-  const allModels = useMemo(() => {
-    if (!data?.rows) return [];
-    const seen = new Set<string>();
-    const list: string[] = [];
-    for (const r of data.rows) {
-      for (const m of r.modelsUsed ?? []) {
-        if (!seen.has(m)) {
-          seen.add(m);
-          list.push(m);
-        }
-      }
-    }
-    return list;
-  }, [data]);
+  const allModels = useMemo(() => breakdownModels(data?.rows ?? []), [data]);
 
   // Compute spend stats per model for the model filter
   const modelStatsMap = useMemo(() => {
-    if (!data?.rows) return new Map<string, { cost: number; share: number }>();
-    const map = new Map<string, number>();
+    type ModelStats = { cost: number; share: number; estimated: boolean };
+    if (!data?.rows) return new Map<string, ModelStats>();
+    const map = new Map<string, ModelStats>();
     let total = 0;
     for (const r of data.rows) {
       for (const b of r.modelBreakdowns ?? []) {
-        map.set(b.modelName, (map.get(b.modelName) ?? 0) + b.cost);
+        const entry = map.get(b.modelName) ?? { cost: 0, share: 0, estimated: false };
+        entry.cost += b.cost;
+        entry.estimated ||= b.costEstimated === true;
+        map.set(b.modelName, entry);
         total += b.cost;
       }
     }
-    const result = new Map<string, { cost: number; share: number }>();
-    for (const [m, cost] of map.entries()) {
-      result.set(m, {
-        cost,
-        share: total > 0 ? (cost / total) * 100 : 0,
-      });
+    for (const entry of map.values()) {
+      entry.share = total > 0 ? (entry.cost / total) * 100 : 0;
     }
-    return result;
+    return map;
   }, [data]);
 
   // Apply model filter at render time only
@@ -388,7 +376,8 @@ export default function Home() {
         selectedSet.has(m)
       );
 
-      if (keptBreakdowns.length === 0 && keptModelsUsed.length === 0) {
+      // Rows without per-model breakdowns cannot be split by model.
+      if (keptBreakdowns.length === 0) {
         continue;
       }
 
@@ -456,6 +445,12 @@ export default function Home() {
     allModels.length > 0 &&
     selectedModels.length === 0 &&
     !loading;
+
+  // Cap the raw panel; stringifying is skipped entirely until it is opened.
+  const rawOutput = useMemo(
+    () => (rawOutputOpen && data ? JSON.stringify(data, null, 2).slice(0, 8000) : ""),
+    [data, rawOutputOpen]
+  );
 
   const isSlowScan =
     scanQuery.providers === "all" ||
@@ -545,8 +540,8 @@ export default function Home() {
           <p className="font-bold">Scan failed</p>
           <p className="mt-1 break-words text-xs text-red-700">{error}</p>
           <p className="mt-1 text-xs text-red-600">
-            Long scans are normal (ccusage@latest can take 1–2 min). Try again —
-            or narrow the range with Since/Until.
+            Full-history scans can take a while. Try again, or narrow the range
+            with Since/Until.
           </p>
           <button
             type="button"
@@ -556,6 +551,26 @@ export default function Home() {
           >
             Retry Scan
           </button>
+        </div>
+      )}
+
+      {data?.warnings && data.warnings.length > 0 && !loading && (
+        <div
+          role="status"
+          className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 shadow-xs"
+        >
+          <p className="font-bold">
+            Partial results: {data.warnings.length} provider
+            {data.warnings.length === 1 ? "" : "s"} failed and{" "}
+            {data.warnings.length === 1 ? "is" : "are"} not included
+          </p>
+          <ul className="mt-1 flex flex-col gap-0.5 text-xs text-amber-800">
+            {data.warnings.map((w) => (
+              <li key={w.provider} className="break-words">
+                <span className="font-semibold">{w.provider}</span>: {w.error}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -675,7 +690,11 @@ export default function Home() {
                               </div>
 
                               {stats && (
-                                <span className="num-tabular shrink-0 text-[11px] font-medium text-slate-500">
+                                <span
+                                  className="num-tabular shrink-0 text-[11px] font-medium text-slate-500"
+                                  title={stats.estimated ? "Estimated: split from per-row cost by token share" : undefined}
+                                >
+                                  {stats.estimated ? "≈ " : ""}
                                   {formatMoney(stats.cost)} ({stats.share.toFixed(0)}%)
                                 </span>
                               )}
@@ -743,18 +762,22 @@ export default function Home() {
                   scannedAt={data.scannedAt}
                   periodCount={displayRows.length}
                 />
-                <CostChart rows={displayRows} />
-                <PeriodTable rows={displayRows} totals={displayTotals} />
+                <AgentBreakdown rows={displayRows} view={data.view} />
+                <CostChart rows={displayRows} view={data.view} />
+                <PeriodTable rows={displayRows} totals={displayTotals} view={data.view} />
               </>
             )}
 
             {/* Diagnostic Raw Output */}
-            <details className="text-xs text-slate-400">
+            <details
+              className="text-xs text-slate-400"
+              onToggle={(e) => setRawOutputOpen(e.currentTarget.open)}
+            >
               <summary className="cursor-pointer select-none hover:text-slate-600">
                 Raw Scanner Output
               </summary>
               <pre className="mt-2 overflow-auto rounded-xl border border-slate-200 bg-white p-4 font-mono text-xs text-slate-700 shadow-2xs">
-                {JSON.stringify(data, null, 2).slice(0, 8000)}
+                {rawOutput}
               </pre>
             </details>
           </div>

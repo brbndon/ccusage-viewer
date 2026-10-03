@@ -2,25 +2,57 @@ import type {
   CcusageRow,
   CcusageTotals,
   ModelBreakdown,
-  ProviderSlug,
   ViewKey,
 } from "./ccusage";
-import { isRow, isTotals, ZERO_TOTALS } from "./ccusage";
+import { isRow, isTotals, rowSortKey, totalsFromRows } from "./ccusage";
 
 export interface ProviderScanResult {
-  provider: ProviderSlug;
+  provider: string;
   rows: CcusageRow[];
   totals: CcusageTotals;
 }
 
+function num(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function nonEmptyString(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+function normalizeBreakdowns(raw: unknown, agent: string | undefined): ModelBreakdown[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((b) => {
+    const item = (typeof b === "object" && b !== null ? b : {}) as Record<string, unknown>;
+    const breakdown: ModelBreakdown = {
+      modelName: typeof item.modelName === "string" ? item.modelName : "unknown",
+      inputTokens: num(item.inputTokens),
+      outputTokens: num(item.outputTokens),
+      cacheCreationTokens: num(item.cacheCreationTokens),
+      cacheReadTokens: num(item.cacheReadTokens),
+      cost: num(item.cost),
+    };
+    if (agent) breakdown.agent = agent;
+    return breakdown;
+  });
+}
+
+/**
+ * Normalizes one ccusage row. Handles the unified/Claude dialect
+ * (`modelBreakdowns`), the Codex dialect (`models` object map, cost only per
+ * row), unified `--by-agent` rows (`agents[]`), and Claude billing blocks
+ * (`tokenCounts`, `models: string[]`, `startTime`).
+ *
+ * `agent` is the provider slug for scoped scans, or "all" for unified scans.
+ */
 export function normalizeProviderRow(
-  provider: ProviderSlug,
+  agent: string,
   view: ViewKey,
   rawRow: unknown
 ): CcusageRow {
   if (typeof rawRow !== "object" || rawRow === null) {
     return {
-      agent: provider,
+      agent,
       period: "",
       inputTokens: 0,
       outputTokens: 0,
@@ -33,147 +65,115 @@ export function normalizeProviderRow(
     };
   }
   const r = rawRow as Record<string, unknown>;
+  const rowAgent = nonEmptyString(r.agent) ?? agent;
+  const metadata: Record<string, unknown> =
+    typeof r.metadata === "object" && r.metadata !== null
+      ? { ...(r.metadata as Record<string, unknown>) }
+      : {};
 
-  let period = "";
-  if (typeof r.period === "string" && r.period.length > 0) {
-    period = r.period;
-  } else if (typeof r.date === "string" && r.date.length > 0) {
-    period = r.date;
-  } else if (typeof r.sessionId === "string" && r.sessionId.length > 0) {
-    period = r.sessionId;
-  }
+  const period =
+    nonEmptyString(r.period) ??
+    nonEmptyString(r.date) ??
+    nonEmptyString(r.sessionId) ??
+    nonEmptyString(r.startTime) ??
+    "";
 
-  const agent =
-    typeof r.agent === "string" && r.agent.length > 0 ? r.agent : provider;
-
-  const inputTokens =
-    typeof r.inputTokens === "number" && Number.isFinite(r.inputTokens)
-      ? r.inputTokens
-      : 0;
-  const outputTokens =
-    typeof r.outputTokens === "number" && Number.isFinite(r.outputTokens)
-      ? r.outputTokens
-      : 0;
-  const cacheCreationTokens =
-    typeof r.cacheCreationTokens === "number" &&
-    Number.isFinite(r.cacheCreationTokens)
-      ? r.cacheCreationTokens
-      : 0;
-  const cacheReadTokens =
-    typeof r.cacheReadTokens === "number" && Number.isFinite(r.cacheReadTokens)
-      ? r.cacheReadTokens
-      : 0;
+  // Billing blocks nest token counts and use cache*Input* names.
+  const tokenCounts =
+    typeof r.tokenCounts === "object" && r.tokenCounts !== null
+      ? (r.tokenCounts as Record<string, unknown>)
+      : {};
+  const inputTokens = num(r.inputTokens ?? tokenCounts.inputTokens);
+  const outputTokens = num(r.outputTokens ?? tokenCounts.outputTokens);
+  const cacheCreationTokens = num(
+    r.cacheCreationTokens ?? tokenCounts.cacheCreationInputTokens
+  );
+  const cacheReadTokens = num(r.cacheReadTokens ?? tokenCounts.cacheReadInputTokens);
 
   const totalTokens =
     typeof r.totalTokens === "number" && Number.isFinite(r.totalTokens)
       ? r.totalTokens
       : inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens;
 
-  let totalCost = 0;
-  if (typeof r.totalCost === "number" && Number.isFinite(r.totalCost)) {
-    totalCost = r.totalCost;
-  } else if (typeof r.costUSD === "number" && Number.isFinite(r.costUSD)) {
-    totalCost = r.costUSD;
-  }
+  const totalCost =
+    typeof r.totalCost === "number" && Number.isFinite(r.totalCost)
+      ? r.totalCost
+      : num(r.costUSD);
 
+  // Breakdowns are only tagged with a concrete agent, never "all".
+  const breakdownAgent = rowAgent === "all" ? undefined : rowAgent;
   let modelsUsed: string[] = [];
   let modelBreakdowns: ModelBreakdown[] = [];
 
-  // Dialect 2/3: models object map (e.g. Codex)
   if (typeof r.models === "object" && r.models !== null && !Array.isArray(r.models)) {
+    // Codex dialect: per-model tokens but cost only for the whole row, so each
+    // model's cost is an estimate split by token share.
     const modelsObj = r.models as Record<string, Record<string, unknown>>;
     modelsUsed = Object.keys(modelsObj);
     modelBreakdowns = Object.entries(modelsObj).map(([modelName, m]) => {
-      const mInput =
-        typeof m?.inputTokens === "number" && Number.isFinite(m.inputTokens)
-          ? m.inputTokens
-          : 0;
-      const mOutput =
-        typeof m?.outputTokens === "number" && Number.isFinite(m.outputTokens)
-          ? m.outputTokens
-          : 0;
-      const mCacheCreation =
-        typeof m?.cacheCreationTokens === "number" &&
-        Number.isFinite(m.cacheCreationTokens)
-          ? m.cacheCreationTokens
-          : 0;
-      const mCacheRead =
-        typeof m?.cacheReadTokens === "number" &&
-        Number.isFinite(m.cacheReadTokens)
-          ? m.cacheReadTokens
-          : 0;
+      const mInput = num(m?.inputTokens);
+      const mOutput = num(m?.outputTokens);
+      const mCacheCreation = num(m?.cacheCreationTokens);
+      const mCacheRead = num(m?.cacheReadTokens);
       const mTotal =
         typeof m?.totalTokens === "number" && Number.isFinite(m.totalTokens)
           ? m.totalTokens
           : mInput + mOutput + mCacheCreation + mCacheRead;
-      const cost =
-        totalTokens > 0 ? (mTotal / totalTokens) * totalCost : 0;
-      return {
+      const breakdown: ModelBreakdown = {
         modelName,
         inputTokens: mInput,
         outputTokens: mOutput,
         cacheCreationTokens: mCacheCreation,
         cacheReadTokens: mCacheRead,
-        cost,
+        cost: totalTokens > 0 ? (mTotal / totalTokens) * totalCost : 0,
+        costEstimated: true,
       };
+      if (breakdownAgent) breakdown.agent = breakdownAgent;
+      return breakdown;
     });
   } else {
-    // Dialect 1: Unified / OpenCode style
     if (Array.isArray(r.modelsUsed)) {
       modelsUsed = r.modelsUsed.map(String);
+    } else if (Array.isArray(r.models)) {
+      // Billing blocks list model names without a per-model breakdown.
+      modelsUsed = r.models.map(String);
     }
-    if (Array.isArray(r.modelBreakdowns)) {
-      modelBreakdowns = r.modelBreakdowns.map((b) => {
-        const item = (typeof b === "object" && b !== null ? b : {}) as Record<
-          string,
-          unknown
-        >;
-        return {
-          modelName:
-            typeof item.modelName === "string" ? item.modelName : "unknown",
-          inputTokens:
-            typeof item.inputTokens === "number" &&
-            Number.isFinite(item.inputTokens)
-              ? item.inputTokens
-              : 0,
-          outputTokens:
-            typeof item.outputTokens === "number" &&
-            Number.isFinite(item.outputTokens)
-              ? item.outputTokens
-              : 0,
-          cacheCreationTokens:
-            typeof item.cacheCreationTokens === "number" &&
-            Number.isFinite(item.cacheCreationTokens)
-              ? item.cacheCreationTokens
-              : 0,
-          cacheReadTokens:
-            typeof item.cacheReadTokens === "number" &&
-            Number.isFinite(item.cacheReadTokens)
-              ? item.cacheReadTokens
-              : 0,
-          cost:
-            typeof item.cost === "number" && Number.isFinite(item.cost)
-              ? item.cost
-              : 0,
-        };
+
+    if (Array.isArray(r.agents)) {
+      // Unified `--by-agent` rows carry exact per-agent model breakdowns.
+      modelBreakdowns = r.agents.flatMap((a) => {
+        const entry = (typeof a === "object" && a !== null ? a : {}) as Record<string, unknown>;
+        return normalizeBreakdowns(entry.modelBreakdowns, nonEmptyString(entry.agent));
       });
+    } else {
+      modelBreakdowns = normalizeBreakdowns(r.modelBreakdowns, breakdownAgent);
     }
   }
 
-  const metadata: Record<string, unknown> =
-    typeof r.metadata === "object" && r.metadata !== null
-      ? { ...(r.metadata as Record<string, unknown>) }
-      : {};
+  const sessionId = nonEmptyString(r.sessionId);
+  if (sessionId && metadata.sessionId === undefined) metadata.sessionId = sessionId;
+  for (const key of [
+    "projectPath",
+    "firstActivity",
+    "lastActivity",
+    "endTime",
+    "actualEndTime",
+    "isActive",
+  ]) {
+    if (r[key] !== undefined && r[key] !== null && metadata[key] === undefined) {
+      metadata[key] = r[key];
+    }
+  }
 
-  if (r.sessionId && metadata.sessionId === undefined) {
-    metadata.sessionId = r.sessionId;
-  }
-  if (r.lastActivity && metadata.lastActivity === undefined) {
-    metadata.lastActivity = r.lastActivity;
-  }
+  const timestamp =
+    view === "blocks"
+      ? nonEmptyString(r.startTime)
+      : view === "session"
+        ? nonEmptyString(metadata.lastActivity)
+        : undefined;
 
   const result: CcusageRow = {
-    agent,
+    agent: rowAgent,
     period,
     inputTokens,
     outputTokens,
@@ -184,17 +184,19 @@ export function normalizeProviderRow(
     modelsUsed,
     modelBreakdowns,
   };
-
-  if (Object.keys(metadata).length > 0) {
-    result.metadata = metadata;
-  }
+  if (timestamp) result.timestamp = timestamp;
+  if (Object.keys(metadata).length > 0) result.metadata = metadata;
 
   return result;
 }
 
-export function normalizeProviderTotals(rawTotals: unknown): CcusageTotals {
+/** ccusage omits totals for some reports (e.g. blocks); derive them from rows then. */
+export function normalizeProviderTotals(
+  rawTotals: unknown,
+  rows: CcusageRow[]
+): CcusageTotals {
   if (rawTotals === undefined || rawTotals === null) {
-    return ZERO_TOTALS;
+    return totalsFromRows(rows);
   }
   if (typeof rawTotals !== "object") {
     throw new Error("unexpected ccusage shape: malformed totals");
@@ -212,8 +214,12 @@ export function normalizeProviderTotals(rawTotals: unknown): CcusageTotals {
   throw new Error("unexpected ccusage shape: malformed totals");
 }
 
+export function sortRowsChronologically(rows: CcusageRow[], view: ViewKey): CcusageRow[] {
+  return [...rows].sort((a, b) => rowSortKey(a, view).localeCompare(rowSortKey(b, view)));
+}
+
 export function normalizeProviderPayload(
-  provider: ProviderSlug,
+  agent: string,
   view: ViewKey,
   parsedJson: unknown
 ): { rows: CcusageRow[]; totals: CcusageTotals } {
@@ -231,26 +237,28 @@ export function normalizeProviderPayload(
     throw new Error(`unexpected ccusage shape: missing "${view}" array`);
   }
 
-  const normalizedRows = rawRows.map((r) =>
-    normalizeProviderRow(provider, view, r)
+  // Gap blocks are idle filler between billing blocks, not usage.
+  const usageRows = rawRows.filter(
+    (r) => !(typeof r === "object" && r !== null && (r as Record<string, unknown>).isGap === true)
   );
-  const rows = normalizedRows.filter(isRow);
+  const rows = usageRows
+    .map((r) => normalizeProviderRow(agent, view, r))
+    .filter(isRow);
 
-  if (rawRows.length > 0 && rows.length === 0) {
+  if (usageRows.length > 0 && rows.length === 0) {
     throw new Error(
-      `unexpected ccusage shape: ${rawRows.length} "${view}" rows failed validation`
+      `unexpected ccusage shape: ${usageRows.length} "${view}" rows failed validation`
     );
   }
 
-  const totals = normalizeProviderTotals(obj["totals"]);
+  const totals = normalizeProviderTotals(obj["totals"], rows);
 
-  return { rows, totals };
+  return { rows: sortRowsChronologically(rows, view), totals };
 }
 
 export function mergeScanResults(
   results: ProviderScanResult[],
-  view: ViewKey,
-  requestedProviders: ProviderSlug[]
+  view: ViewKey
 ): { rows: CcusageRow[]; totals: CcusageTotals } {
   const totals: CcusageTotals = {
     totalCost: 0,
@@ -270,19 +278,11 @@ export function mergeScanResults(
     totals.cacheReadTokens += r.totals.cacheReadTokens;
   }
 
-  if (view === "blocks") {
-    return { rows: results.flatMap((r) => r.rows), totals };
-  }
-
-  if (view === "session") {
-    const rows: CcusageRow[] = [];
-    for (const reqProvider of requestedProviders) {
-      const found = results.find((res) => res.provider === reqProvider);
-      if (found) {
-        rows.push(...found.rows);
-      }
-    }
-    return { rows, totals };
+  if (view === "blocks" || view === "session") {
+    return {
+      rows: sortRowsChronologically(results.flatMap((r) => r.rows), view),
+      totals,
+    };
   }
 
   // daily, weekly, monthly: group by period
@@ -295,15 +295,14 @@ export function mergeScanResults(
     totalTokens: number;
     totalCost: number;
     modelsUsed: string[];
+    agents: string[];
+    /** Keyed by agent + model so per-agent spend survives the merge. */
     modelBreakdownMap: Map<string, ModelBreakdown>;
   }
 
   const groups = new Map<string, GroupedRow>();
 
-  for (const reqProvider of requestedProviders) {
-    const found = results.find((res) => res.provider === reqProvider);
-    if (!found) continue;
-
+  for (const found of results) {
     for (const row of found.rows) {
       const p = row.period;
       let g = groups.get(p);
@@ -317,6 +316,7 @@ export function mergeScanResults(
           totalTokens: 0,
           totalCost: 0,
           modelsUsed: [],
+          agents: [],
           modelBreakdownMap: new Map(),
         };
         groups.set(p, g);
@@ -328,6 +328,7 @@ export function mergeScanResults(
       g.cacheReadTokens += row.cacheReadTokens;
       g.totalTokens += row.totalTokens;
       g.totalCost += row.totalCost;
+      if (!g.agents.includes(found.provider)) g.agents.push(found.provider);
 
       for (const m of row.modelsUsed ?? []) {
         if (!g.modelsUsed.includes(m)) {
@@ -336,15 +337,18 @@ export function mergeScanResults(
       }
 
       for (const b of row.modelBreakdowns ?? []) {
-        const existing = g.modelBreakdownMap.get(b.modelName);
+        const agent = b.agent ?? found.provider;
+        const key = `${agent}::${b.modelName}`;
+        const existing = g.modelBreakdownMap.get(key);
         if (existing) {
           existing.inputTokens += b.inputTokens;
           existing.outputTokens += b.outputTokens;
           existing.cacheCreationTokens += b.cacheCreationTokens;
           existing.cacheReadTokens += b.cacheReadTokens;
           existing.cost += b.cost;
+          existing.costEstimated ||= b.costEstimated;
         } else {
-          g.modelBreakdownMap.set(b.modelName, { ...b });
+          g.modelBreakdownMap.set(key, { ...b, agent });
         }
       }
     }
@@ -361,7 +365,7 @@ export function mergeScanResults(
     totalCost: g.totalCost,
     modelsUsed: g.modelsUsed,
     modelBreakdowns: Array.from(g.modelBreakdownMap.values()),
-    metadata: { agents: requestedProviders },
+    metadata: { agents: g.agents },
   }));
 
   mergedRows.sort((a, b) => a.period.localeCompare(b.period));

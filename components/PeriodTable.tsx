@@ -1,17 +1,19 @@
 "use client";
 
 import { Fragment, useMemo, useState } from "react";
-import type { CcusageRow, CcusageTotals } from "@/lib/ccusage";
+import type { CcusageRow, CcusageTotals, ViewKey } from "@/lib/ccusage";
+import {
+  agentLabel,
+  periodLabel,
+  periodNoun,
+  projectPathOf,
+  rowSortKey,
+} from "@/lib/ccusage";
 import {
   formatCompactNumber,
   formatMoney,
   parseModelMeta,
 } from "@/lib/model-meta";
-
-function projectPathOf(r: CcusageRow): string | undefined {
-  const m = r.metadata as { projectPath?: unknown } | undefined;
-  return typeof m?.projectPath === "string" ? m.projectPath : undefined;
-}
 
 export function rowKey(r: CcusageRow, index: number): string {
   return `${r.period}::${r.agent}::${projectPathOf(r) ?? index}`;
@@ -23,9 +25,11 @@ type PeriodSort = "date-desc" | "date-asc" | "cost-desc";
 export default function PeriodTable({
   rows,
   totals,
+  view,
 }: {
   rows: CcusageRow[];
   totals: CcusageTotals;
+  view: ViewKey;
 }) {
   const [openRow, setOpenRow] = useState<string | null>(null);
   const [modelSort, setModelSort] = useState<ModelSort>("cost");
@@ -44,6 +48,7 @@ export default function PeriodTable({
         outputTokens: number;
         cacheReadTokens: number;
         cacheCreationTokens: number;
+        costEstimated: boolean;
       }
     >();
 
@@ -56,6 +61,7 @@ export default function PeriodTable({
           outputTokens: 0,
           cacheReadTokens: 0,
           cacheCreationTokens: 0,
+          costEstimated: false,
         };
         const rowTok =
           b.inputTokens +
@@ -68,6 +74,7 @@ export default function PeriodTable({
         entry.outputTokens += b.outputTokens;
         entry.cacheReadTokens += b.cacheReadTokens;
         entry.cacheCreationTokens += b.cacheCreationTokens;
+        entry.costEstimated ||= b.costEstimated === true;
         map.set(b.modelName, entry);
       }
     }
@@ -112,7 +119,9 @@ export default function PeriodTable({
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       list = list.filter((item) => {
-        const periodMatch = String(item.row.period).toLowerCase().includes(q);
+        const periodMatch =
+          String(item.row.period).toLowerCase().includes(q) ||
+          periodLabel(item.row, view).toLowerCase().includes(q);
         const modelMatch = (item.row.modelsUsed ?? []).some((m) =>
           m.toLowerCase().includes(q)
         );
@@ -125,19 +134,20 @@ export default function PeriodTable({
 
     if (periodSort === "date-desc") {
       list.sort((a, b) =>
-        String(b.row.period).localeCompare(String(a.row.period))
+        rowSortKey(b.row, view).localeCompare(rowSortKey(a.row, view))
       );
     } else if (periodSort === "date-asc") {
       list.sort((a, b) =>
-        String(a.row.period).localeCompare(String(b.row.period))
+        rowSortKey(a.row, view).localeCompare(rowSortKey(b.row, view))
       );
     } else if (periodSort === "cost-desc") {
       list.sort((a, b) => b.row.totalCost - a.row.totalCost);
     }
 
     return list;
-  }, [rows, searchQuery, periodSort, maxRowCost]);
+  }, [rows, searchQuery, periodSort, maxRowCost, view]);
 
+  const hasEstimatedCosts = modelRollup.some((m) => m.costEstimated);
   const visiblePeriods = showAllPeriods
     ? processedPeriods
     : processedPeriods.slice(0, 15);
@@ -270,7 +280,11 @@ export default function PeriodTable({
                     ${m.costPerMillion.toFixed(2)}/M
                   </td>
 
-                  <td className="num-tabular py-3 pl-4 text-right font-bold text-slate-900">
+                  <td
+                    className="num-tabular py-3 pl-4 text-right font-bold text-slate-900"
+                    title={m.costEstimated ? "Estimated: split from per-row cost by token share" : undefined}
+                  >
+                    {m.costEstimated ? "≈ " : ""}
                     {formatMoney(m.cost)}
                   </td>
                 </tr>
@@ -279,13 +293,22 @@ export default function PeriodTable({
               {modelRollup.length === 0 && (
                 <tr>
                   <td colSpan={5} className="py-6 text-center text-sm text-slate-500">
-                    No model data found for the current query.
+                    {view === "blocks"
+                      ? "ccusage does not report per-model costs for billing blocks."
+                      : "No model data found for the current query."}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
+        {hasEstimatedCosts && (
+          <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">
+            ≈ Estimated. Codex reports cost per {view === "session" ? "session" : "period"}, not per
+            model, so model costs are split by token share. Scan with “All incl. slow”
+            for exact per-model costs.
+          </p>
+        )}
       </div>
 
       {/* 2. Periods Activity Card */}
@@ -296,7 +319,8 @@ export default function PeriodTable({
               Period Activity
             </h2>
             <p className="text-xs text-slate-500">
-              Showing {visiblePeriods.length} of {processedPeriods.length} periods
+              Showing {visiblePeriods.length} of {processedPeriods.length}{" "}
+              {periodNoun(view, processedPeriods.length)}
               {rows.length !== processedPeriods.length && ` (filtered from ${rows.length})`}
             </p>
           </div>
@@ -305,7 +329,8 @@ export default function PeriodTable({
             {/* Search Input */}
             <input
               type="text"
-              placeholder="Filter date or model..."
+              placeholder={view === "session" ? "Filter sessions…" : "Filter date or model…"}
+              aria-label="Filter rows"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:outline-hidden focus:ring-1 focus:ring-blue-500"
@@ -385,13 +410,19 @@ export default function PeriodTable({
                     >
                       <td className="py-3 pr-4 font-medium text-slate-800">
                         <div className="flex items-center gap-1.5">
-                          <span>{String(r.period).slice(0, 24)}</span>
+                          <span title={r.period}>{periodLabel(r, view)}</span>
                           {isPeak && (
                             <span className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-800">
                               Peak
                             </span>
                           )}
                         </div>
+                        {view === "session" && (
+                          <div className="mt-0.5 max-w-64 truncate text-[11px] font-normal text-slate-500">
+                            {agentLabel(r.agent)}
+                            {projectPathOf(r) ? ` · ${projectPathOf(r)}` : ""}
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 pr-4">
@@ -470,7 +501,7 @@ export default function PeriodTable({
                           <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-xs">
                             <div className="mb-2 flex items-center justify-between border-b border-slate-100 pb-2">
                               <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                                Model Breakdown for {String(r.period).slice(0, 24)}
+                                Model Breakdown for {periodLabel(r, view)}
                               </span>
                               {projectPathOf(r) && (
                                 <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-600">
@@ -492,12 +523,24 @@ export default function PeriodTable({
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
+                                {(r.modelBreakdowns ?? []).length === 0 && (
+                                  <tr>
+                                    <td colSpan={6} className="py-3 text-center text-slate-500">
+                                      ccusage does not report a per-model breakdown for this {periodNoun(view, 1)}.
+                                    </td>
+                                  </tr>
+                                )}
                                 {(r.modelBreakdowns ?? []).map((b) => {
                                   const meta = parseModelMeta(b.modelName);
                                   return (
-                                    <tr key={b.modelName} className="hover:bg-slate-50/50">
+                                    <tr key={`${b.agent ?? r.agent}::${b.modelName}`} className="hover:bg-slate-50/50">
                                       <td className="py-1.5 pr-2">
                                         <div className="flex items-center gap-1.5">
+                                          {b.agent && r.agent === "all" && (
+                                            <span className="text-[10px] font-semibold text-slate-500">
+                                              {agentLabel(b.agent)}
+                                            </span>
+                                          )}
                                           <span
                                             className={`inline-flex rounded-xs border px-1 py-0.5 text-[10px] font-semibold ${meta.badgeClass}`}
                                           >
@@ -520,7 +563,11 @@ export default function PeriodTable({
                                       <td className="num-tabular py-1.5 text-right text-slate-600">
                                         {formatCompactNumber(b.cacheReadTokens)}
                                       </td>
-                                      <td className="num-tabular py-1.5 pl-2 text-right font-semibold text-slate-900">
+                                      <td
+                                        className="num-tabular py-1.5 pl-2 text-right font-semibold text-slate-900"
+                                        title={b.costEstimated ? "Estimated: split from per-row cost by token share" : undefined}
+                                      >
+                                        {b.costEstimated ? "≈ " : ""}
                                         {formatMoney(b.cost)}
                                       </td>
                                     </tr>
@@ -557,8 +604,8 @@ export default function PeriodTable({
               className="btn-press rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50"
             >
               {showAllPeriods
-                ? "Show top 15 periods"
-                : `View all ${processedPeriods.length} periods`}
+                ? `Show top 15 ${periodNoun(view, 15)}`
+                : `View all ${processedPeriods.length} ${periodNoun(view, processedPeriods.length)}`}
             </button>
           </div>
         )}

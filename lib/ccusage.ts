@@ -51,6 +51,13 @@ export interface ModelBreakdown {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cost: number;
+  /** Agent (provider slug) that produced this usage, when known. */
+  agent?: string;
+  /**
+   * True when ccusage only reported cost for the whole row and this model's
+   * share was split by token count (Codex-style output). Not an exact price.
+   */
+  costEstimated?: boolean;
 }
 
 export interface CcusageRow {
@@ -64,6 +71,8 @@ export interface CcusageRow {
   totalCost: number;
   modelsUsed: string[];
   modelBreakdowns: ModelBreakdown[];
+  /** ISO time used to order session (last activity) and blocks (start) rows. */
+  timestamp?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -77,16 +86,16 @@ export interface CcusageTotals {
 }
 
 export interface ScanEngine {
-  /** Package spec actually executed, e.g. "ccusage@20.0.23". */
+  /** Package spec actually executed, e.g. "ccusage@20.0.26". */
   spec: string;
-  /**
-   * True when spec was pinned to the registry's `latest` at scan time.
-   * False means the registry was unreachable and npx fell back to the
-   * `ccusage@latest` tag, which may serve a stale cache entry.
-   */
-  pinned: boolean;
-  /** Resolved version when pinned; null when unverified (fallback path). */
-  version: string | null;
+  /** Version installed in node_modules (pinned in package.json). */
+  version: string;
+}
+
+/** A provider whose scan failed; the rest of the scan still succeeded. */
+export interface ScanWarning {
+  provider: string;
+  error: string;
 }
 
 export interface ScanResponse {
@@ -97,7 +106,8 @@ export interface ScanResponse {
   /** Engine provenance. Optional so older cached responses still satisfy the type. */
   engine?: ScanEngine;
   providers?: string[];
-  engines?: ScanEngine[];
+  /** Providers that failed during a scoped scan and are missing from the results. */
+  warnings?: ScanWarning[];
 }
 
 export function isViewKey(v: string): v is ViewKey {
@@ -161,4 +171,125 @@ export function isDateParam(v: string): boolean {
 
 export function normalizeDateParam(v: string): string {
   return v.replaceAll("-", "");
+}
+
+export function totalsFromRows(rows: CcusageRow[]): CcusageTotals {
+  const totals = { ...ZERO_TOTALS };
+  for (const r of rows) {
+    totals.totalCost += r.totalCost;
+    totals.totalTokens += r.totalTokens;
+    totals.inputTokens += r.inputTokens;
+    totals.outputTokens += r.outputTokens;
+    totals.cacheCreationTokens += r.cacheCreationTokens;
+    totals.cacheReadTokens += r.cacheReadTokens;
+  }
+  return totals;
+}
+
+/**
+ * Chronological sort key. Calendar views sort by period; session and blocks
+ * rows sort by timestamp, and rows without one sort first (oldest).
+ */
+export function rowSortKey(row: CcusageRow, view: ViewKey): string {
+  if (view === "session" || view === "blocks") return row.timestamp ?? "";
+  return row.period;
+}
+
+export function projectPathOf(row: CcusageRow): string | undefined {
+  const projectPath = row.metadata?.projectPath;
+  return typeof projectPath === "string" ? projectPath : undefined;
+}
+
+function formatTimestamp(iso: string): string | null {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** Human-readable label for a row's period in the given view. */
+export function periodLabel(row: CcusageRow, view: ViewKey): string {
+  if (view === "blocks") {
+    const label = (row.timestamp && formatTimestamp(row.timestamp)) || row.period;
+    return row.metadata?.isActive === true ? `${label} (active)` : label;
+  }
+  if (view === "session") {
+    const label = row.timestamp && formatTimestamp(row.timestamp);
+    if (label) return label;
+    return row.period.length > 18 ? `${row.period.slice(0, 18)}…` : row.period;
+  }
+  return row.period;
+}
+
+export function periodNoun(view: ViewKey, count: number): string {
+  const noun = view === "session" ? "session" : view === "blocks" ? "block" : "period";
+  return count === 1 ? noun : `${noun}s`;
+}
+
+const AGENT_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  copilot: "Copilot CLI",
+  gemini: "Gemini CLI",
+  openclaw: "OpenClaw",
+  zcode: "ZCode",
+  unattributed: "Unattributed",
+  other: "Other",
+};
+
+export function agentLabel(agent: string): string {
+  return AGENT_LABELS[agent] ?? agent.charAt(0).toUpperCase() + agent.slice(1);
+}
+
+export interface AgentRollup {
+  agent: string;
+  cost: number;
+  tokens: number;
+}
+
+/**
+ * Spend and tokens per agent within one row. Uses agent-tagged model
+ * breakdowns when present (merged calendar rows), otherwise the row's own agent.
+ */
+export function agentSharesOfRow(row: CcusageRow): Map<string, { cost: number; tokens: number }> {
+  const shares = new Map<string, { cost: number; tokens: number }>();
+  function add(agent: string, cost: number, tokens: number) {
+    const entry = shares.get(agent) ?? { cost: 0, tokens: 0 };
+    entry.cost += cost;
+    entry.tokens += tokens;
+    shares.set(agent, entry);
+  }
+
+  const breakdowns = row.modelBreakdowns ?? [];
+  if (breakdowns.length > 0 && breakdowns.every((b) => b.agent)) {
+    for (const b of breakdowns) {
+      add(
+        b.agent as string,
+        b.cost,
+        b.inputTokens + b.outputTokens + b.cacheCreationTokens + b.cacheReadTokens
+      );
+    }
+  } else {
+    add(row.agent && row.agent !== "all" ? row.agent : "unattributed", row.totalCost, row.totalTokens);
+  }
+  return shares;
+}
+
+/** Spend and tokens per agent across rows, highest spend first. */
+export function rollupAgents(rows: CcusageRow[]): AgentRollup[] {
+  const map = new Map<string, AgentRollup>();
+  for (const r of rows) {
+    for (const [agent, share] of agentSharesOfRow(r)) {
+      const entry = map.get(agent) ?? { agent, cost: 0, tokens: 0 };
+      entry.cost += share.cost;
+      entry.tokens += share.tokens;
+      map.set(agent, entry);
+    }
+  }
+  return [...map.values()].sort((a, b) => b.cost - a.cost);
 }

@@ -1,4 +1,5 @@
 import type { CcusageRow, CcusageTotals, ViewKey } from "@/lib/ccusage";
+import { agentLabel, rollupAgents } from "@/lib/ccusage";
 import { formatMoney } from "@/lib/model-meta";
 
 interface SummaryOptions {
@@ -29,6 +30,7 @@ export function buildUsageCsv(rows: CcusageRow[]): string {
     "Cache Read Tokens",
     "Total Tokens",
     "Cost USD",
+    "Cost Estimated",
   ].map(csvCell).join(",")];
 
   for (const row of rows) {
@@ -39,7 +41,7 @@ export function buildUsageCsv(rows: CcusageRow[]): string {
           breakdown.cacheCreationTokens + breakdown.cacheReadTokens;
         lines.push([
           row.period,
-          row.agent,
+          breakdown.agent ?? row.agent,
           breakdown.modelName,
           breakdown.inputTokens,
           breakdown.outputTokens,
@@ -47,6 +49,7 @@ export function buildUsageCsv(rows: CcusageRow[]): string {
           breakdown.cacheReadTokens,
           tokenCount,
           breakdown.cost,
+          breakdown.costEstimated ? "yes" : "no",
         ].map(csvCell).join(","));
       }
       continue;
@@ -62,6 +65,7 @@ export function buildUsageCsv(rows: CcusageRow[]): string {
       row.cacheReadTokens,
       row.totalTokens,
       row.totalCost,
+      "no",
     ].map(csvCell).join(","));
   }
 
@@ -76,11 +80,12 @@ export function buildUsageMarkdown({
   rangeLabel,
   providersLabel,
 }: SummaryOptions): string {
-  const models = new Map<string, { cost: number; tokens: number }>();
+  const models = new Map<string, { cost: number; tokens: number; estimated: boolean }>();
   for (const row of rows) {
     for (const breakdown of row.modelBreakdowns ?? []) {
-      const current = models.get(breakdown.modelName) ?? { cost: 0, tokens: 0 };
+      const current = models.get(breakdown.modelName) ?? { cost: 0, tokens: 0, estimated: false };
       current.cost += breakdown.cost;
+      current.estimated ||= breakdown.costEstimated === true;
       current.tokens += breakdown.inputTokens + breakdown.outputTokens +
         breakdown.cacheCreationTokens + breakdown.cacheReadTokens;
       models.set(breakdown.modelName, current);
@@ -90,7 +95,12 @@ export function buildUsageMarkdown({
   const modelLines = [...models.entries()]
     .sort((a, b) => b[1].cost - a[1].cost)
     .slice(0, 10)
-    .map(([name, model]) => `| ${name.replaceAll("|", "\\|")} | ${formatMoney(model.cost)} | ${model.tokens.toLocaleString("en-US")} |`);
+    .map(([name, model]) => `| ${name.replaceAll("|", "\\|")} | ${model.estimated ? "≈ " : ""}${formatMoney(model.cost)} | ${model.tokens.toLocaleString("en-US")} |`);
+  const hasEstimates = [...models.values()].some((model) => model.estimated);
+
+  const agentLines = rollupAgents(rows).map(
+    (agent) => `| ${agentLabel(agent.agent)} | ${formatMoney(agent.cost)} | ${agent.tokens.toLocaleString("en-US")} |`
+  );
 
   return [
     "# ccusage Summary",
@@ -111,8 +121,14 @@ export function buildUsageMarkdown({
     `| Output | ${totals.outputTokens.toLocaleString("en-US")} |`,
     `| Cache create | ${totals.cacheCreationTokens.toLocaleString("en-US")} |`,
     `| Cache read | ${totals.cacheReadTokens.toLocaleString("en-US")} |`,
+    ...(agentLines.length > 0
+      ? ["", "## Spend by agent", "", "| Agent | Cost | Tokens |", "| --- | ---: | ---: |", ...agentLines]
+      : []),
     ...(modelLines.length > 0
       ? ["", "## Spend by model", "", "| Model | Cost | Tokens |", "| --- | ---: | ---: |", ...modelLines]
+      : []),
+    ...(hasEstimates
+      ? ["", "≈ Estimated: Codex reports cost per period, not per model, so model costs are split by token share."]
       : []),
   ].join("\n");
 }

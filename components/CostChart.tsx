@@ -9,7 +9,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { CcusageRow } from "@/lib/ccusage";
+import type { CcusageRow, ViewKey } from "@/lib/ccusage";
+import { periodLabel, periodNoun } from "@/lib/ccusage";
 import { formatCompactNumber, formatMoney } from "@/lib/model-meta";
 
 function formatChartMoney(amount: number): string {
@@ -64,10 +65,11 @@ function CustomTooltip({
   );
 }
 
-export default function CostChart({ rows }: { rows: CcusageRow[] }) {
+export default function CostChart({ rows, view }: { rows: CcusageRow[]; view: ViewKey }) {
+  // Rows arrive in chronological order, so the tail is the most recent.
   const chartedRows = rows.slice(-30);
   const data = chartedRows.map((r) => ({
-    name: String(r.period ?? "").slice(0, 10),
+    name: periodLabel(r, view),
     cost: Number(r.totalCost ?? 0),
     tokens: Number(r.totalTokens ?? 0),
   }));
@@ -97,7 +99,7 @@ export default function CostChart({ rows }: { rows: CcusageRow[] }) {
             Cost Timeline
           </h2>
           <p className="text-xs text-slate-500">
-            Spend trends across the last {data.length} periods
+            Spend trends across the last {data.length} {periodNoun(view, data.length)}
           </p>
         </div>
 

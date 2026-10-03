@@ -1,19 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 import {
   isDateParam,
   isProviderSlug,
-  isRow,
-  isTotals,
   isViewKey,
   normalizeDateParam,
   PROVIDERS,
   type ProviderSlug,
   type ScanEngine,
   type ScanResponse,
+  type ScanWarning,
+  type ViewKey,
   VIEW_SUPPORT,
-  ZERO_TOTALS,
 } from "@/lib/ccusage";
 import {
   mergeScanResults,
@@ -26,14 +27,16 @@ const execFileAsync = promisify(execFile);
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 const CCUSAGE_TIMEOUT_MS = 300_000;
-/** Short budget for the registry version probe; the scan itself must never fail because of it. */
-const REGISTRY_PROBE_TIMEOUT_MS = 15_000;
 
 const DEFAULT_PROVIDERS: ProviderSlug[] = PROVIDERS.filter(
   (p) => p !== "antigravity"
 );
 
-const SEMVER_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
+/** Views where unified scans can attribute spend per agent via `--by-agent`. */
+const BY_AGENT_VIEWS: readonly ViewKey[] = ["daily", "weekly", "monthly"];
+
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const TRUSTED_FETCH_SITES = new Set(["same-origin", "none"]);
 
 class ProviderScanError extends Error {
   constructor(
@@ -45,11 +48,65 @@ class ProviderScanError extends Error {
   }
 }
 
+class ScanSupersededError extends Error {
+  constructor() {
+    super("Scan superseded by a newer scan");
+    this.name = "ScanSupersededError";
+  }
+}
+
+/**
+ * The scan API runs local commands and returns private usage data, so only
+ * same-origin requests addressed to a loopback host are served. This blocks
+ * other devices on the network, other websites (CSRF), and DNS rebinding.
+ */
+function rejectUntrustedRequest(req: NextRequest): NextResponse | null {
+  const host = req.headers.get("host") ?? "";
+  let hostname = "";
+  try {
+    hostname = new URL(`http://${host}`).hostname;
+  } catch {
+    // Malformed Host header; rejected below.
+  }
+  if (!LOCAL_HOSTNAMES.has(hostname)) {
+    return NextResponse.json(
+      { error: "Forbidden: the scan API is only served on localhost" },
+      { status: 403 }
+    );
+  }
+
+  const fetchSite = req.headers.get("sec-fetch-site");
+  if (fetchSite !== null && !TRUSTED_FETCH_SITES.has(fetchSite)) {
+    return NextResponse.json(
+      { error: "Forbidden: cross-site scan requests are not allowed" },
+      { status: 403 }
+    );
+  }
+
+  const origin = req.headers.get("origin");
+  if (origin !== null) {
+    let originHost = "";
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      // Malformed or opaque ("null") origin; rejected below.
+    }
+    if (originHost !== host) {
+      return NextResponse.json(
+        { error: "Forbidden: cross-origin scan requests are not allowed" },
+        { status: 403 }
+      );
+    }
+  }
+
+  return null;
+}
+
 // Strip ANSI escapes and collapse whitespace so stderr stays a safe,
 // single-line detail string (server paths may otherwise leak verbatim).
 function cleanDetail(err: unknown): string {
   const e = err as { stderr?: unknown; message?: unknown };
-  const raw = e?.stderr ?? e?.message ?? err;
+  const raw = e?.stderr || e?.message || err;
   return String(raw)
     .replace(/\u001b\[[0-9;]*m/g, "")
     .replace(/\s+/g, " ")
@@ -57,31 +114,91 @@ function cleanDetail(err: unknown): string {
     .slice(0, 1000);
 }
 
-// Best-effort exact pin of the registry `latest`: `npx ccusage@<exact>` must
-// install that version or fail, so a warm npx cache entry cannot silently
-// serve a stale binary. Falls back to the `ccusage@latest` tag when the
-// registry is unreachable — the scan itself must never fail for this probe.
-// The registry value is semver-validated before interpolation (defense in
-// depth; execFile takes no shell, but the spec must still be well-formed).
-async function resolveSpec(
-  signal: AbortSignal
-): Promise<{ spec: string; pinned: boolean; version: string | null }> {
-  try {
-    const { stdout } = await execFileAsync("npm", ["view", "ccusage", "version"], {
-      timeout: REGISTRY_PROBE_TIMEOUT_MS,
-      maxBuffer: 64 * 1024,
-      signal,
-    });
-    const latest = stdout.trim();
-    if (SEMVER_RE.test(latest))
-      return { spec: `ccusage@${latest}`, pinned: true, version: latest };
-  } catch (e) {
-    if (signal.aborted) throw e;
-  }
-  return { spec: "ccusage@latest", pinned: false, version: null };
+function isTimeout(err: unknown): boolean {
+  const e = err as { killed?: boolean; code?: string | number };
+  return e?.killed === true || e?.code === "ETIMEDOUT";
 }
 
+interface CcusageBinary {
+  cliPath: string;
+  engine: ScanEngine;
+}
+
+let binaryPromise: Promise<CcusageBinary> | null = null;
+
+/**
+ * Resolves the ccusage CLI installed from package.json. The exact version is
+ * pinned with lockfile integrity hashes, so scans never download or execute
+ * unreviewed releases. Update deliberately with `npm install ccusage@<version>`.
+ */
+function resolveCcusage(): Promise<CcusageBinary> {
+  binaryPromise ??= (async () => {
+    const packageDir = path.join(process.cwd(), "node_modules", "ccusage");
+    const pkg = JSON.parse(
+      await readFile(path.join(packageDir, "package.json"), "utf8")
+    ) as { version?: unknown; bin?: unknown };
+    const bin =
+      typeof pkg.bin === "string"
+        ? pkg.bin
+        : (pkg.bin as Record<string, unknown> | undefined)?.ccusage;
+    if (typeof pkg.version !== "string" || typeof bin !== "string") {
+      throw new Error("node_modules/ccusage/package.json is missing version or bin");
+    }
+    return {
+      cliPath: path.join(packageDir, bin),
+      engine: { spec: `ccusage@${pkg.version}`, version: pkg.version },
+    };
+  })().catch((err) => {
+    binaryPromise = null;
+    throw err;
+  });
+  return binaryPromise;
+}
+
+async function runCcusage(
+  cliPath: string,
+  args: string[],
+  signal: AbortSignal
+): Promise<unknown> {
+  const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], {
+    timeout: CCUSAGE_TIMEOUT_MS,
+    maxBuffer: 32 * 1024 * 1024,
+    signal,
+    env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+  });
+  return JSON.parse(stdout);
+}
+
+function scanErrorResponse(
+  err: unknown,
+  startedAt: number,
+  provider?: ProviderSlug
+): NextResponse {
+  if (err instanceof ScanSupersededError) {
+    return NextResponse.json({ error: err.message }, { status: 409 });
+  }
+  const timedOut = isTimeout(err);
+  const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+  const label = provider ? `ccusage provider ${provider}` : "ccusage";
+  const detail = cleanDetail(err);
+  return NextResponse.json(
+    {
+      error: timedOut
+        ? `${label} timed out after ${elapsedSec}s (budget ${CCUSAGE_TIMEOUT_MS / 1000}s)`
+        : `${label} failed`,
+      detail: provider ? `[provider: ${provider}] ${detail}` : detail,
+    },
+    { status: timedOut ? 504 : 500 }
+  );
+}
+
+/** Only one scan runs at a time; a new scan cancels the previous one. */
+let activeScan: AbortController | null = null;
+
 export async function GET(req: NextRequest) {
+  const rejection = rejectUntrustedRequest(req);
+  if (rejection) return rejection;
+
   const url = new URL(req.url);
   const viewRaw = url.searchParams.get("view") ?? "daily";
   const since = url.searchParams.get("since") ?? "";
@@ -144,124 +261,95 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Pin to the registry `latest` so a warm npx cache entry cannot silently
-  // serve a stale binary. `--yes` suppresses the npx install prompt so
-  // dev-server runs never hang waiting on stdin.
-  const { spec, pinned, version } = await resolveSpec(req.signal);
-  const engine: ScanEngine = { spec, pinned, version };
+  let binary: CcusageBinary;
+  try {
+    binary = await resolveCcusage();
+  } catch (err) {
+    return NextResponse.json(
+      {
+        error: "ccusage is not installed. Run npm install.",
+        detail: cleanDetail(err),
+      },
+      { status: 500 }
+    );
+  }
+  const { cliPath, engine } = binary;
+
+  activeScan?.abort(new ScanSupersededError());
+  const scanCtrl = new AbortController();
+  activeScan = scanCtrl;
+  const signal = AbortSignal.any([req.signal, scanCtrl.signal]);
   const startedAt = Date.now();
+  const dateArgs = [
+    ...(since ? ["--since", since] : []),
+    ...(until ? ["--until", until] : []),
+  ];
 
-  if (isAll) {
-    const args = ["--yes", spec, viewRaw, "--json"];
-    if (since) args.push("--since", since);
-    if (until) args.push("--until", until);
-
-    try {
-      const { stdout } = await execFileAsync("npx", args, {
-        timeout: CCUSAGE_TIMEOUT_MS,
-        maxBuffer: 32 * 1024 * 1024,
-        signal: req.signal,
-        env: {
-          ...process.env,
-          npm_config_yes: "true",
-          NPM_CONFIG_UPDATE_NOTIFIER: "false",
-          NO_UPDATE_NOTIFIER: "1",
-          FORCE_COLOR: "0",
-        },
-      });
-      const parsed = JSON.parse(stdout) as Record<string, unknown>;
-      const rawRows = parsed[viewRaw];
-      if (!Array.isArray(rawRows)) {
-        throw new Error(`unexpected ccusage shape: missing "${viewRaw}" array`);
-      }
-      const rows = rawRows.filter(isRow);
-      if (rawRows.length > 0 && rows.length === 0) {
-        throw new Error(
-          `unexpected ccusage shape: ${rawRows.length} "${viewRaw}" rows failed validation`
+  try {
+    if (isAll) {
+      const args = [viewRaw, "--json", ...dateArgs];
+      if (BY_AGENT_VIEWS.includes(viewRaw)) args.push("--by-agent");
+      try {
+        const parsed = await runCcusage(cliPath, args, signal);
+        const { rows, totals } = normalizeProviderPayload("all", viewRaw, parsed);
+        const body: ScanResponse = {
+          view: viewRaw,
+          rows,
+          totals,
+          scannedAt: new Date().toISOString(),
+          engine,
+          providers: ["all"],
+        };
+        return NextResponse.json(body);
+      } catch (err: unknown) {
+        return scanErrorResponse(
+          scanCtrl.signal.aborted ? scanCtrl.signal.reason : err,
+          startedAt
         );
       }
-      const rawTotals = parsed["totals"];
-      const totals =
-        rawTotals === undefined
-          ? ZERO_TOTALS
-          : isTotals(rawTotals)
-            ? rawTotals
-            : (() => {
-                throw new Error("unexpected ccusage shape: malformed totals");
-              })();
-      const body: ScanResponse = {
-        view: viewRaw,
-        rows,
-        totals,
-        scannedAt: new Date().toISOString(),
-        engine,
-        providers: ["all"],
-        engines: [engine],
-      };
-      return NextResponse.json(body);
-    } catch (err: unknown) {
-      const e = err as {
-        killed?: boolean;
-        code?: string | number;
-        stderr?: string;
-        message?: string;
-      };
-      const timedOut = e?.killed === true || e?.code === "ETIMEDOUT";
-      const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
-      const detail = cleanDetail(err);
-      return NextResponse.json(
-        {
-          error: timedOut
-            ? `ccusage timed out after ${elapsedSec}s (budget ${CCUSAGE_TIMEOUT_MS / 1000}s)`
-            : "ccusage failed",
-          detail,
-        },
-        { status: timedOut ? 504 : 500 }
-      );
     }
-  }
 
-  // Scoped scan: fan out concurrently with Promise.all
-  try {
-    const providerResults = await Promise.all(
+    // Scoped scan: fan out concurrently; one failing provider must not hide
+    // the others, so failures are reported as warnings.
+    const settled = await Promise.allSettled(
       requestedProviders.map(async (provider): Promise<ProviderScanResult> => {
-        const childArgs = ["--yes", spec, provider, viewRaw, "--json"];
-        if (since) childArgs.push("--since", since);
-        if (until) childArgs.push("--until", until);
-
         try {
-          const { stdout } = await execFileAsync("npx", childArgs, {
-            timeout: CCUSAGE_TIMEOUT_MS,
-            maxBuffer: 32 * 1024 * 1024,
-            signal: req.signal,
-            env: {
-              ...process.env,
-              npm_config_yes: "true",
-              NPM_CONFIG_UPDATE_NOTIFIER: "false",
-              NO_UPDATE_NOTIFIER: "1",
-              FORCE_COLOR: "0",
-            },
-          });
-          const parsed = JSON.parse(stdout);
-          const { rows, totals } = normalizeProviderPayload(
-            provider,
-            viewRaw,
-            parsed
+          const parsed = await runCcusage(
+            cliPath,
+            [provider, viewRaw, "--json", ...dateArgs],
+            signal
           );
-          return { provider, rows, totals };
+          return { provider, ...normalizeProviderPayload(provider, viewRaw, parsed) };
         } catch (childErr: unknown) {
           throw new ProviderScanError(provider, childErr);
         }
       })
     );
 
-    const { rows, totals } = mergeScanResults(
-      providerResults,
-      viewRaw,
-      requestedProviders
-    );
+    if (scanCtrl.signal.aborted) {
+      return scanErrorResponse(scanCtrl.signal.reason, startedAt);
+    }
 
-    const engines = requestedProviders.map(() => engine);
+    const providerResults: ProviderScanResult[] = [];
+    const failures: ProviderScanError[] = [];
+    for (const result of settled) {
+      if (result.status === "fulfilled") providerResults.push(result.value);
+      else failures.push(result.reason as ProviderScanError);
+    }
+
+    if (providerResults.length === 0) {
+      const first = failures[0];
+      return scanErrorResponse(first.cause, startedAt, first.provider);
+    }
+
+    const warnings: ScanWarning[] = failures.map((f) => ({
+      provider: f.provider,
+      error: isTimeout(f.cause)
+        ? `timed out (budget ${CCUSAGE_TIMEOUT_MS / 1000}s)`
+        : cleanDetail(f.cause),
+    }));
+
+    const { rows, totals } = mergeScanResults(providerResults, viewRaw);
     const body: ScanResponse = {
       view: viewRaw,
       rows,
@@ -269,33 +357,10 @@ export async function GET(req: NextRequest) {
       scannedAt: new Date().toISOString(),
       engine,
       providers: requestedProviders,
-      engines,
     };
+    if (warnings.length > 0) body.warnings = warnings;
     return NextResponse.json(body);
-  } catch (err: unknown) {
-    const providerName =
-      err instanceof ProviderScanError ? err.provider : undefined;
-    const underlying = err instanceof ProviderScanError ? err.cause : err;
-    const e = underlying as {
-      killed?: boolean;
-      code?: string | number;
-      stderr?: string;
-      message?: string;
-    };
-    const timedOut = e?.killed === true || e?.code === "ETIMEDOUT";
-    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
-    const rawDetail = cleanDetail(underlying);
-    const detail = providerName
-      ? `[provider: ${providerName}] ${rawDetail}`
-      : rawDetail;
-    return NextResponse.json(
-      {
-        error: timedOut
-          ? `ccusage ${providerName ? `provider ${providerName} ` : ""}timed out after ${elapsedSec}s (budget ${CCUSAGE_TIMEOUT_MS / 1000}s)`
-          : `ccusage ${providerName ? `provider ${providerName} ` : ""}failed`.trim(),
-        detail,
-      },
-      { status: timedOut ? 504 : 500 }
-    );
+  } finally {
+    if (activeScan === scanCtrl) activeScan = null;
   }
 }
