@@ -4,13 +4,17 @@ import { Fragment, useMemo, useState } from "react";
 import type { CcusageRow, CcusageTotals, ViewKey } from "@/lib/ccusage";
 import {
   agentLabel,
+  breakdownTokens,
   periodLabel,
   periodNoun,
   projectPathOf,
   rowSortKey,
+  totalsFromRows,
+  unallocatedModelUsage,
 } from "@/lib/ccusage";
 import {
   formatCompactNumber,
+  formatChartMoney,
   formatMoney,
   parseModelMeta,
 } from "@/lib/model-meta";
@@ -63,11 +67,7 @@ export default function PeriodTable({
           cacheCreationTokens: 0,
           costEstimated: false,
         };
-        const rowTok =
-          b.inputTokens +
-          b.outputTokens +
-          b.cacheReadTokens +
-          b.cacheCreationTokens;
+        const rowTok = breakdownTokens(b);
         entry.tokens += rowTok;
         entry.cost += b.cost;
         entry.inputTokens += b.inputTokens;
@@ -98,6 +98,7 @@ export default function PeriodTable({
 
     return list;
   }, [rows, totals.totalCost, modelSort]);
+  const unallocated = useMemo(() => totalsFromRows(rows.flatMap(unallocatedModelUsage)), [rows]);
 
   // Max cost among rows for spend intensity bar
   const maxRowCost = useMemo(() => {
@@ -262,7 +263,7 @@ export default function PeriodTable({
                         />
                       </div>
                       <span className="num-tabular text-xs font-medium text-slate-600">
-                        {m.share.toFixed(1)}%
+                        {m.costEstimated || totals.costEstimated ? "≈ " : ""}{m.share.toFixed(1)}%
                       </span>
                     </div>
                   </td>
@@ -277,6 +278,7 @@ export default function PeriodTable({
                   </td>
 
                   <td className="num-tabular py-3 text-right text-xs text-slate-500">
+                    {m.costEstimated ? "≈ " : ""}
                     ${m.costPerMillion.toFixed(2)}/M
                   </td>
 
@@ -302,6 +304,12 @@ export default function PeriodTable({
             </tbody>
           </table>
         </div>
+        {(unallocated.totalTokens > 0 || unallocated.totalCost > 0) && (
+          <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">
+            Included in agent totals but not attributed to a model: {unallocated.totalTokens.toLocaleString("en-US")} tokens
+            and {formatChartMoney(unallocated.totalCost)}. Model token counts and rates use only attributed tokens.
+          </p>
+        )}
         {hasEstimatedCosts && (
           <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">
             ≈ Estimated. Codex reports cost per {view === "session" ? "session" : "period"}, not per
@@ -477,7 +485,7 @@ export default function PeriodTable({
                                 : "text-slate-700"
                             }`}
                           >
-                            {formatMoney(r.totalCost)}
+                            {r.costEstimated ? "≈ " : ""}{formatMoney(r.totalCost)}
                           </span>
                         </div>
                       </td>
@@ -519,13 +527,14 @@ export default function PeriodTable({
                                   <th scope="col" className="py-1.5 text-right">Output</th>
                                   <th scope="col" className="py-1.5 text-right">Cache Create</th>
                                   <th scope="col" className="py-1.5 text-right">Cache Read</th>
+                                  <th scope="col" className="py-1.5 text-right" title="Reported reasoning tokens, included in output; — means unavailable">Reasoning (in output)</th>
                                   <th scope="col" className="py-1.5 pl-2 text-right">Cost</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
                                 {(r.modelBreakdowns ?? []).length === 0 && (
                                   <tr>
-                                    <td colSpan={6} className="py-3 text-center text-slate-500">
+                                    <td colSpan={7} className="py-3 text-center text-slate-500">
                                       ccusage does not report a per-model breakdown for this {periodNoun(view, 1)}.
                                     </td>
                                   </tr>
@@ -563,6 +572,9 @@ export default function PeriodTable({
                                       <td className="num-tabular py-1.5 text-right text-slate-600">
                                         {formatCompactNumber(b.cacheReadTokens)}
                                       </td>
+                                      <td className="num-tabular py-1.5 text-right text-slate-600">
+                                        {b.reasoningOutputTokens === undefined ? "—" : formatCompactNumber(b.reasoningOutputTokens)}
+                                      </td>
                                       <td
                                         className="num-tabular py-1.5 pl-2 text-right font-semibold text-slate-900"
                                         title={b.costEstimated ? "Estimated: split from per-row cost by token share" : undefined}
@@ -576,6 +588,11 @@ export default function PeriodTable({
                               </tbody>
                               </table>
                             </div>
+                            {unallocatedModelUsage(r).length > 0 && (
+                              <p className="mt-2 text-xs text-slate-500">
+                                Additional usage without model attribution is included in this {periodNoun(view, 1)} and its agent totals.
+                              </p>
+                            )}
                           </div>
                         </td>
                       </tr>

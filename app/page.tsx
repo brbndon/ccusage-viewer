@@ -9,7 +9,6 @@ import AgentBreakdown from "@/components/AgentBreakdown";
 import PeriodTable from "@/components/PeriodTable";
 import type {
   CcusageRow,
-  CcusageTotals,
   ProviderSlug,
   ScanEngine,
   ScanResponse,
@@ -21,8 +20,11 @@ import {
   isViewSupportedByProviders,
   PROVIDERS,
   ZERO_TOTALS,
+  filterRowsByModels,
+  totalsFromRows,
+  unallocatedModelUsage,
 } from "@/lib/ccusage";
-import { formatMoney, parseModelMeta } from "@/lib/model-meta";
+import { formatChartMoney, formatMoney, parseModelMeta } from "@/lib/model-meta";
 
 /** Progress timer tick: 2 renders/sec keeps the elapsed readout alive without churning. */
 const PROGRESS_TICK_MS = 500;
@@ -357,69 +359,14 @@ export default function Home() {
       return { displayRows: data.rows, displayTotals: data.totals };
     }
 
-    const selectedSet = new Set(selectedModels);
-    const rows: CcusageRow[] = [];
-    const totals: CcusageTotals = {
-      totalCost: 0,
-      totalTokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-    };
-
-    for (const r of data.rows) {
-      const keptBreakdowns = (r.modelBreakdowns ?? []).filter((b) =>
-        selectedSet.has(b.modelName)
-      );
-      const keptModelsUsed = (r.modelsUsed ?? []).filter((m) =>
-        selectedSet.has(m)
-      );
-
-      // Rows without per-model breakdowns cannot be split by model.
-      if (keptBreakdowns.length === 0) {
-        continue;
-      }
-
-      let inTok = 0;
-      let outTok = 0;
-      let cacheCr = 0;
-      let cacheRd = 0;
-      let cost = 0;
-
-      for (const b of keptBreakdowns) {
-        inTok += b.inputTokens;
-        outTok += b.outputTokens;
-        cacheCr += b.cacheCreationTokens;
-        cacheRd += b.cacheReadTokens;
-        cost += b.cost;
-      }
-
-      const rowTotalTokens = inTok + outTok + cacheCr + cacheRd;
-      const filteredRow: CcusageRow = {
-        ...r,
-        inputTokens: inTok,
-        outputTokens: outTok,
-        cacheCreationTokens: cacheCr,
-        cacheReadTokens: cacheRd,
-        totalTokens: rowTotalTokens,
-        totalCost: cost,
-        modelsUsed: keptModelsUsed,
-        modelBreakdowns: keptBreakdowns,
-      };
-
-      rows.push(filteredRow);
-
-      totals.totalCost += cost;
-      totals.totalTokens += rowTotalTokens;
-      totals.inputTokens += inTok;
-      totals.outputTokens += outTok;
-      totals.cacheCreationTokens += cacheCr;
-      totals.cacheReadTokens += cacheRd;
-    }
-
-    return { displayRows: rows, displayTotals: totals };
+    const rows = filterRowsByModels(data.rows, new Set(selectedModels));
+    return { displayRows: rows, displayTotals: totalsFromRows(rows) };
   }, [data, selectedModels, allModels]);
+
+  const modelFilterApplied = allModels.length > 0 && selectedModels.length < allModels.length;
+  const excludedModelUsage = useMemo(() => totalsFromRows(
+    (data?.rows ?? []).flatMap(unallocatedModelUsage)
+  ), [data]);
 
   // Quick helper: Select top 80% spend models
   function selectTop80Spend() {
@@ -729,6 +676,10 @@ export default function Home() {
                       scannedAt={data.scannedAt}
                       rangeLabel={describeRange(lastSuccessfulRange.since, lastSuccessfulRange.until)}
                       providersLabel={describeProviders(data.providers)}
+                      includedProvidersLabel={describeProviders(data.providers?.filter((p) => !data.warnings?.some((w) => w.provider === p)))}
+                      warnings={data.warnings}
+                      modelFilterApplied={modelFilterApplied}
+                      excludedModelUsage={excludedModelUsage}
                     />
                   )}
                 </div>
@@ -750,11 +701,21 @@ export default function Home() {
                   scannedAt={data.scannedAt}
                   rangeLabel={describeRange(lastSuccessfulRange.since, lastSuccessfulRange.until)}
                   providersLabel={describeProviders(data.providers)}
+                  includedProvidersLabel={describeProviders(data.providers?.filter((p) => !data.warnings?.some((w) => w.provider === p)))}
+                  warnings={data.warnings}
+                  modelFilterApplied={modelFilterApplied}
+                  excludedModelUsage={excludedModelUsage}
                 />
               </div>
             )}
 
             {/* Core Observability Views */}
+            {modelFilterApplied && (excludedModelUsage.totalTokens > 0 || excludedModelUsage.totalCost > 0) && (
+              <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                Model filter excludes {excludedModelUsage.totalTokens.toLocaleString("en-US")} tokens
+                and {formatChartMoney(excludedModelUsage.totalCost)} that ccusage cannot attribute to a model.
+              </p>
+            )}
             {displayRows.length > 0 && (
               <>
                 <SummaryCards

@@ -50,6 +50,9 @@ export interface ModelBreakdown {
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
+  reasoningOutputTokens?: number;
+  /** Canonical token total; Codex reasoning is already included in output. */
+  totalTokens?: number;
   cost: number;
   /** Agent (provider slug) that produced this usage, when known. */
   agent?: string;
@@ -69,6 +72,10 @@ export interface CcusageRow {
   cacheReadTokens: number;
   totalTokens: number;
   totalCost: number;
+  reasoningOutputTokens?: number;
+  costEstimated?: boolean;
+  /** Source agent totals, independent of incomplete model breakdowns. */
+  agentTotals?: AgentUsage[];
   modelsUsed: string[];
   modelBreakdowns: ModelBreakdown[];
   /** ISO time used to order session (last activity) and blocks (start) rows. */
@@ -83,6 +90,12 @@ export interface CcusageTotals {
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
+  reasoningOutputTokens?: number;
+  costEstimated?: boolean;
+}
+
+export interface AgentUsage extends CcusageTotals {
+  agent: string;
 }
 
 export interface ScanEngine {
@@ -129,6 +142,8 @@ export const ZERO_TOTALS: CcusageTotals = {
   outputTokens: 0,
   cacheCreationTokens: 0,
   cacheReadTokens: 0,
+  reasoningOutputTokens: 0,
+  costEstimated: false,
 };
 
 export function isRow(v: unknown): v is CcusageRow {
@@ -173,17 +188,95 @@ export function normalizeDateParam(v: string): string {
   return v.replaceAll("-", "");
 }
 
-export function totalsFromRows(rows: CcusageRow[]): CcusageTotals {
+export function totalsFromRows(rows: readonly CcusageTotals[]): CcusageTotals {
   const totals = { ...ZERO_TOTALS };
-  for (const r of rows) {
-    totals.totalCost += r.totalCost;
-    totals.totalTokens += r.totalTokens;
-    totals.inputTokens += r.inputTokens;
-    totals.outputTokens += r.outputTokens;
-    totals.cacheCreationTokens += r.cacheCreationTokens;
-    totals.cacheReadTokens += r.cacheReadTokens;
+  for (const r of rows) addTotals(totals, r);
+  return totals;
+}
+
+export function addTotals(target: CcusageTotals, source: CcusageTotals): void {
+  target.totalCost += source.totalCost;
+  target.totalTokens += source.totalTokens;
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  target.cacheCreationTokens += source.cacheCreationTokens;
+  target.cacheReadTokens += source.cacheReadTokens;
+  target.reasoningOutputTokens = (target.reasoningOutputTokens ?? 0) + (source.reasoningOutputTokens ?? 0);
+  target.costEstimated ||= source.costEstimated === true;
+}
+
+export function breakdownTokens(b: ModelBreakdown): number {
+  return b.totalTokens ?? b.inputTokens + b.outputTokens + b.cacheCreationTokens +
+    b.cacheReadTokens;
+}
+
+export function totalsFromBreakdowns(breakdowns: ModelBreakdown[]): CcusageTotals {
+  const totals = { ...ZERO_TOTALS };
+  for (const b of breakdowns) {
+    addTotals(totals, { ...b, totalCost: b.cost, totalTokens: breakdownTokens(b) });
   }
   return totals;
+}
+
+function remainder(total: CcusageTotals, allocated: CcusageTotals): CcusageTotals {
+  const cost = total.totalCost - allocated.totalCost;
+  return {
+    totalCost: cost > 1e-9 ? cost : 0,
+    totalTokens: Math.max(0, total.totalTokens - allocated.totalTokens),
+    inputTokens: Math.max(0, total.inputTokens - allocated.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - allocated.outputTokens),
+    cacheCreationTokens: Math.max(0, total.cacheCreationTokens - allocated.cacheCreationTokens),
+    cacheReadTokens: Math.max(0, total.cacheReadTokens - allocated.cacheReadTokens),
+    reasoningOutputTokens: Math.max(0, (total.reasoningOutputTokens ?? 0) - (allocated.reasoningOutputTokens ?? 0)),
+    costEstimated: total.costEstimated,
+  };
+}
+
+/** Uses source totals; the fallback supports older responses without agentTotals. */
+export function agentTotalsOfRow(row: CcusageRow): AgentUsage[] {
+  if (row.agentTotals?.length) return row.agentTotals;
+  if (row.agent && row.agent !== "all") return [{ ...totalsFromRows([row]), agent: row.agent }];
+  const map = new Map<string, AgentUsage>();
+  for (const b of row.modelBreakdowns ?? []) {
+    const agent = b.agent ?? "unattributed";
+    const entry = map.get(agent) ?? { ...ZERO_TOTALS, agent };
+    addTotals(entry, totalsFromBreakdowns([b]));
+    map.set(agent, entry);
+  }
+  const allocated = { ...ZERO_TOTALS };
+  for (const entry of map.values()) addTotals(allocated, entry);
+  const rest = remainder(row, allocated);
+  if (rest.totalCost > 0 || rest.totalTokens > 0) {
+    const entry = map.get("unattributed") ?? { ...ZERO_TOTALS, agent: "unattributed" };
+    addTotals(entry, rest);
+    map.set(entry.agent, entry);
+  }
+  return [...map.values()];
+}
+
+/** Usage that ccusage reports for an agent but cannot assign to a model. */
+export function unallocatedModelUsage(row: CcusageRow): AgentUsage[] {
+  return agentTotalsOfRow(row).map((total) => {
+    const breakdowns = row.modelBreakdowns.filter((b) =>
+      (b.agent ?? (row.agent === "all" ? "unattributed" : row.agent)) === total.agent);
+    return { agent: total.agent, ...remainder(total, totalsFromBreakdowns(breakdowns)) };
+  }).filter((r) => r.totalCost > 0 || r.totalTokens > 0);
+}
+
+export function filterRowsByModels(rows: CcusageRow[], selected: Set<string>): CcusageRow[] {
+  return rows.flatMap((row) => {
+    const kept = row.modelBreakdowns.filter((b) => selected.has(b.modelName));
+    if (!kept.length) return [];
+    const filtered: CcusageRow = {
+      ...row,
+      ...totalsFromBreakdowns(kept),
+      modelsUsed: [...new Set(kept.map((b) => b.modelName))],
+      modelBreakdowns: kept,
+      agentTotals: undefined,
+    };
+    filtered.agentTotals = agentTotalsOfRow(filtered);
+    return [filtered];
+  });
 }
 
 /**
@@ -250,32 +343,20 @@ export interface AgentRollup {
   agent: string;
   cost: number;
   tokens: number;
+  costEstimated: boolean;
 }
 
 /**
- * Spend and tokens per agent within one row. Uses agent-tagged model
- * breakdowns when present (merged calendar rows), otherwise the row's own agent.
+ * Spend and tokens per agent within one row, including usage with no model split.
  */
-export function agentSharesOfRow(row: CcusageRow): Map<string, { cost: number; tokens: number }> {
-  const shares = new Map<string, { cost: number; tokens: number }>();
-  function add(agent: string, cost: number, tokens: number) {
-    const entry = shares.get(agent) ?? { cost: 0, tokens: 0 };
-    entry.cost += cost;
-    entry.tokens += tokens;
-    shares.set(agent, entry);
-  }
-
-  const breakdowns = row.modelBreakdowns ?? [];
-  if (breakdowns.length > 0 && breakdowns.every((b) => b.agent)) {
-    for (const b of breakdowns) {
-      add(
-        b.agent as string,
-        b.cost,
-        b.inputTokens + b.outputTokens + b.cacheCreationTokens + b.cacheReadTokens
-      );
-    }
-  } else {
-    add(row.agent && row.agent !== "all" ? row.agent : "unattributed", row.totalCost, row.totalTokens);
+export function agentSharesOfRow(row: CcusageRow): Map<string, AgentRollup> {
+  const shares = new Map<string, AgentRollup>();
+  for (const total of agentTotalsOfRow(row)) {
+    const entry = shares.get(total.agent) ?? { agent: total.agent, cost: 0, tokens: 0, costEstimated: false };
+    entry.cost += total.totalCost;
+    entry.tokens += total.totalTokens;
+    entry.costEstimated ||= total.costEstimated === true;
+    shares.set(total.agent, entry);
   }
   return shares;
 }
@@ -285,9 +366,10 @@ export function rollupAgents(rows: CcusageRow[]): AgentRollup[] {
   const map = new Map<string, AgentRollup>();
   for (const r of rows) {
     for (const [agent, share] of agentSharesOfRow(r)) {
-      const entry = map.get(agent) ?? { agent, cost: 0, tokens: 0 };
+      const entry = map.get(agent) ?? { agent, cost: 0, tokens: 0, costEstimated: false };
       entry.cost += share.cost;
       entry.tokens += share.tokens;
+      entry.costEstimated ||= share.costEstimated;
       map.set(agent, entry);
     }
   }

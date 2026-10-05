@@ -2,15 +2,16 @@
 
 import { useState } from "react";
 import type { CcusageRow, CcusageTotals, ViewKey } from "@/lib/ccusage";
-import { buildUsageCsv, buildUsageMarkdown } from "@/lib/usage-exports";
+import { buildUsageCsv, buildUsageMarkdown, type ExportContext } from "@/lib/usage-exports";
 
-interface Props {
+interface Props extends ExportContext {
   rows: CcusageRow[];
   totals: CcusageTotals;
   view: ViewKey;
   scannedAt: string;
   rangeLabel: string;
   providersLabel: string;
+  includedProvidersLabel: string;
 }
 
 export default function ExportActions({
@@ -20,13 +21,18 @@ export default function ExportActions({
   scannedAt,
   rangeLabel,
   providersLabel,
+  includedProvidersLabel,
+  warnings,
+  modelFilterApplied,
+  excludedModelUsage,
 }: Props) {
   const [status, setStatus] = useState("");
 
   async function copySummary() {
     try {
       await navigator.clipboard.writeText(
-        buildUsageMarkdown({ rows, totals, view, scannedAt, rangeLabel, providersLabel })
+        buildUsageMarkdown({ rows, totals, view, scannedAt, rangeLabel, providersLabel,
+          includedProvidersLabel, warnings, modelFilterApplied, excludedModelUsage })
       );
       setStatus("Summary copied as Markdown.");
     } catch {
@@ -35,7 +41,7 @@ export default function ExportActions({
   }
 
   function exportCsv() {
-    const contents = buildUsageCsv(rows);
+    const contents = buildUsageCsv(rows, { warnings, modelFilterApplied, excludedModelUsage });
     const blob = new Blob([contents], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");

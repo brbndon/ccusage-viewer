@@ -1,10 +1,11 @@
 import type {
   CcusageRow,
   CcusageTotals,
+  AgentUsage,
   ModelBreakdown,
   ViewKey,
 } from "./ccusage";
-import { isRow, isTotals, rowSortKey, totalsFromRows } from "./ccusage";
+import { addTotals, agentTotalsOfRow, breakdownTokens, isRow, isTotals, rowSortKey, totalsFromRows, ZERO_TOTALS } from "./ccusage";
 
 export interface ProviderScanResult {
   provider: string;
@@ -20,6 +21,27 @@ function nonEmptyString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
+function normalizeUsage(r: Record<string, unknown>): CcusageTotals {
+  const tokenCounts = (r.tokenCounts ?? {}) as Record<string, unknown>;
+  const metadata = (r.metadata ?? {}) as Record<string, unknown>;
+  const inputTokens = num(r.inputTokens ?? tokenCounts.inputTokens);
+  const outputTokens = num(r.outputTokens ?? tokenCounts.outputTokens);
+  const cacheCreationTokens = num(r.cacheCreationTokens ?? tokenCounts.cacheCreationInputTokens);
+  const cacheReadTokens = num(r.cacheReadTokens ?? tokenCounts.cacheReadInputTokens);
+  const baseTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens;
+  // Codex reasoning is a subset of output, not another additive token category.
+  // Unified calendar rows omit this detail; do not infer it from totalTokens.
+  const reasoningOutputTokens = num(r.reasoningOutputTokens ?? metadata.reasoningOutputTokens);
+  return {
+    inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, reasoningOutputTokens,
+    totalTokens: typeof r.totalTokens === "number" && Number.isFinite(r.totalTokens)
+      ? r.totalTokens : baseTokens,
+    totalCost: typeof r.totalCost === "number" && Number.isFinite(r.totalCost)
+      ? r.totalCost : num(r.costUSD),
+    costEstimated: false,
+  };
+}
+
 function normalizeBreakdowns(raw: unknown, agent: string | undefined): ModelBreakdown[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((b) => {
@@ -30,8 +52,12 @@ function normalizeBreakdowns(raw: unknown, agent: string | undefined): ModelBrea
       outputTokens: num(item.outputTokens),
       cacheCreationTokens: num(item.cacheCreationTokens),
       cacheReadTokens: num(item.cacheReadTokens),
+      reasoningOutputTokens: typeof item.reasoningOutputTokens === "number"
+        ? num(item.reasoningOutputTokens) : undefined,
       cost: num(item.cost),
     };
+    breakdown.totalTokens = typeof item.totalTokens === "number" && Number.isFinite(item.totalTokens)
+      ? item.totalTokens : breakdownTokens(breakdown);
     if (agent) breakdown.agent = agent;
     return breakdown;
   });
@@ -65,7 +91,8 @@ export function normalizeProviderRow(
     };
   }
   const r = rawRow as Record<string, unknown>;
-  const rowAgent = nonEmptyString(r.agent) ?? agent;
+  const rawAgent = nonEmptyString(r.agent) ?? agent;
+  const rowAgent = view === "blocks" && rawAgent === "all" ? "claude" : rawAgent;
   const metadata: Record<string, unknown> =
     typeof r.metadata === "object" && r.metadata !== null
       ? { ...(r.metadata as Record<string, unknown>) }
@@ -74,31 +101,17 @@ export function normalizeProviderRow(
   const period =
     nonEmptyString(r.period) ??
     nonEmptyString(r.date) ??
+    nonEmptyString(r.week) ??
+    nonEmptyString(r.month) ??
     nonEmptyString(r.sessionId) ??
     nonEmptyString(r.startTime) ??
     "";
-
-  // Billing blocks nest token counts and use cache*Input* names.
-  const tokenCounts =
-    typeof r.tokenCounts === "object" && r.tokenCounts !== null
-      ? (r.tokenCounts as Record<string, unknown>)
-      : {};
-  const inputTokens = num(r.inputTokens ?? tokenCounts.inputTokens);
-  const outputTokens = num(r.outputTokens ?? tokenCounts.outputTokens);
-  const cacheCreationTokens = num(
-    r.cacheCreationTokens ?? tokenCounts.cacheCreationInputTokens
-  );
-  const cacheReadTokens = num(r.cacheReadTokens ?? tokenCounts.cacheReadInputTokens);
-
-  const totalTokens =
-    typeof r.totalTokens === "number" && Number.isFinite(r.totalTokens)
-      ? r.totalTokens
-      : inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens;
-
-  const totalCost =
-    typeof r.totalCost === "number" && Number.isFinite(r.totalCost)
-      ? r.totalCost
-      : num(r.costUSD);
+  if (!period && (view === "daily" || view === "weekly" || view === "monthly")) {
+    throw new Error(`unexpected ccusage shape: missing ${view} period`);
+  }
+  const usage = normalizeUsage(r);
+  const { totalTokens, totalCost } = usage;
+  let agentTotals: AgentUsage[] | undefined;
 
   // Breakdowns are only tagged with a concrete agent, never "all".
   const breakdownAgent = rowAgent === "all" ? undefined : rowAgent;
@@ -115,6 +128,7 @@ export function normalizeProviderRow(
       const mOutput = num(m?.outputTokens);
       const mCacheCreation = num(m?.cacheCreationTokens);
       const mCacheRead = num(m?.cacheReadTokens);
+      const mReasoning = num(m?.reasoningOutputTokens);
       const mTotal =
         typeof m?.totalTokens === "number" && Number.isFinite(m.totalTokens)
           ? m.totalTokens
@@ -125,6 +139,8 @@ export function normalizeProviderRow(
         outputTokens: mOutput,
         cacheCreationTokens: mCacheCreation,
         cacheReadTokens: mCacheRead,
+        reasoningOutputTokens: mReasoning,
+        totalTokens: mTotal,
         cost: totalTokens > 0 ? (mTotal / totalTokens) * totalCost : 0,
         costEstimated: true,
       };
@@ -145,6 +161,12 @@ export function normalizeProviderRow(
         const entry = (typeof a === "object" && a !== null ? a : {}) as Record<string, unknown>;
         return normalizeBreakdowns(entry.modelBreakdowns, nonEmptyString(entry.agent));
       });
+      agentTotals = r.agents.map((a) => {
+        const entry = (typeof a === "object" && a !== null ? a : {}) as Record<string, unknown>;
+        const entryAgent = nonEmptyString(entry.agent) ?? "unattributed";
+        return { agent: entryAgent, ...normalizeUsage(entry) };
+      });
+      usage.reasoningOutputTokens = agentTotals.reduce((sum, a) => sum + (a.reasoningOutputTokens ?? 0), 0);
     } else {
       modelBreakdowns = normalizeBreakdowns(r.modelBreakdowns, breakdownAgent);
     }
@@ -173,17 +195,13 @@ export function normalizeProviderRow(
         : undefined;
 
   const result: CcusageRow = {
+    ...usage,
     agent: rowAgent,
     period,
-    inputTokens,
-    outputTokens,
-    cacheCreationTokens,
-    cacheReadTokens,
-    totalTokens,
-    totalCost,
     modelsUsed,
     modelBreakdowns,
   };
+  result.agentTotals = agentTotals?.length ? agentTotals : agentTotalsOfRow(result);
   if (timestamp) result.timestamp = timestamp;
   if (Object.keys(metadata).length > 0) result.metadata = metadata;
 
@@ -208,7 +226,8 @@ export function normalizeProviderTotals(
   }
 
   if (isTotals(t)) {
-    return t;
+    return { ...t, reasoningOutputTokens: typeof t.reasoningOutputTokens === "number"
+      ? t.reasoningOutputTokens : totalsFromRows(rows).reasoningOutputTokens, costEstimated: false };
   }
 
   throw new Error("unexpected ccusage shape: malformed totals");
@@ -260,22 +279,10 @@ export function mergeScanResults(
   results: ProviderScanResult[],
   view: ViewKey
 ): { rows: CcusageRow[]; totals: CcusageTotals } {
-  const totals: CcusageTotals = {
-    totalCost: 0,
-    totalTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheCreationTokens: 0,
-    cacheReadTokens: 0,
-  };
+  const totals: CcusageTotals = { ...ZERO_TOTALS };
 
   for (const r of results) {
-    totals.totalCost += r.totals.totalCost;
-    totals.totalTokens += r.totals.totalTokens;
-    totals.inputTokens += r.totals.inputTokens;
-    totals.outputTokens += r.totals.outputTokens;
-    totals.cacheCreationTokens += r.totals.cacheCreationTokens;
-    totals.cacheReadTokens += r.totals.cacheReadTokens;
+    addTotals(totals, r.totals);
   }
 
   if (view === "blocks" || view === "session") {
@@ -286,7 +293,7 @@ export function mergeScanResults(
   }
 
   // daily, weekly, monthly: group by period
-  interface GroupedRow {
+  interface GroupedRow extends CcusageTotals {
     period: string;
     inputTokens: number;
     outputTokens: number;
@@ -296,6 +303,7 @@ export function mergeScanResults(
     totalCost: number;
     modelsUsed: string[];
     agents: string[];
+    agentTotalMap: Map<string, AgentUsage>;
     /** Keyed by agent + model so per-agent spend survives the merge. */
     modelBreakdownMap: Map<string, ModelBreakdown>;
   }
@@ -308,6 +316,7 @@ export function mergeScanResults(
       let g = groups.get(p);
       if (!g) {
         g = {
+          ...ZERO_TOTALS,
           period: p,
           inputTokens: 0,
           outputTokens: 0,
@@ -317,17 +326,18 @@ export function mergeScanResults(
           totalCost: 0,
           modelsUsed: [],
           agents: [],
+          agentTotalMap: new Map(),
           modelBreakdownMap: new Map(),
         };
         groups.set(p, g);
       }
 
-      g.inputTokens += row.inputTokens;
-      g.outputTokens += row.outputTokens;
-      g.cacheCreationTokens += row.cacheCreationTokens;
-      g.cacheReadTokens += row.cacheReadTokens;
-      g.totalTokens += row.totalTokens;
-      g.totalCost += row.totalCost;
+      addTotals(g, row);
+      for (const a of agentTotalsOfRow(row)) {
+        const entry = g.agentTotalMap.get(a.agent) ?? { ...ZERO_TOTALS, agent: a.agent };
+        addTotals(entry, a);
+        g.agentTotalMap.set(a.agent, entry);
+      }
       if (!g.agents.includes(found.provider)) g.agents.push(found.provider);
 
       for (const m of row.modelsUsed ?? []) {
@@ -341,11 +351,15 @@ export function mergeScanResults(
         const key = `${agent}::${b.modelName}`;
         const existing = g.modelBreakdownMap.get(key);
         if (existing) {
+          existing.totalTokens = breakdownTokens(existing) + breakdownTokens(b);
           existing.inputTokens += b.inputTokens;
           existing.outputTokens += b.outputTokens;
           existing.cacheCreationTokens += b.cacheCreationTokens;
           existing.cacheReadTokens += b.cacheReadTokens;
           existing.cost += b.cost;
+          if (existing.reasoningOutputTokens !== undefined || b.reasoningOutputTokens !== undefined) {
+            existing.reasoningOutputTokens = (existing.reasoningOutputTokens ?? 0) + (b.reasoningOutputTokens ?? 0);
+          }
           existing.costEstimated ||= b.costEstimated;
         } else {
           g.modelBreakdownMap.set(key, { ...b, agent });
@@ -363,6 +377,9 @@ export function mergeScanResults(
     cacheReadTokens: g.cacheReadTokens,
     totalTokens: g.totalTokens,
     totalCost: g.totalCost,
+    reasoningOutputTokens: g.reasoningOutputTokens,
+    costEstimated: g.costEstimated,
+    agentTotals: [...g.agentTotalMap.values()],
     modelsUsed: g.modelsUsed,
     modelBreakdowns: Array.from(g.modelBreakdownMap.values()),
     metadata: { agents: g.agents },

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -23,6 +24,7 @@ import {
 } from "@/lib/ccusage-normalize";
 
 const execFileAsync = promisify(execFile);
+const requireFromRoute = createRequire(import.meta.url);
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -133,9 +135,13 @@ let binaryPromise: Promise<CcusageBinary> | null = null;
  */
 function resolveCcusage(): Promise<CcusageBinary> {
   binaryPromise ??= (async () => {
-    const packageDir = path.join(process.cwd(), "node_modules", "ccusage");
+    // We need an on-disk executable path, not the bundler's numeric module ID.
+    const packagePath = requireFromRoute.resolve(
+      /* turbopackIgnore: true */ /* webpackIgnore: true */ "ccusage/package.json"
+    );
+    const packageDir = path.dirname(packagePath);
     const pkg = JSON.parse(
-      await readFile(path.join(packageDir, "package.json"), "utf8")
+      await readFile(packagePath, "utf8")
     ) as { version?: unknown; bin?: unknown };
     const bin =
       typeof pkg.bin === "string"

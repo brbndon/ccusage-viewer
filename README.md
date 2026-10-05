@@ -15,7 +15,7 @@ Open http://localhost:3000, pick providers, a view (Daily / Weekly / Monthly / S
 
 - `GET /api/scan` runs the `ccusage` CLI installed in `node_modules` and returns normalized rows, totals, and spend per agent and model.
 - **Default providers** (everything except Antigravity, which is slow) run one `ccusage <provider> <view>` per provider in parallel. If one provider fails, the rest still render with a warning.
-- **All incl. slow** runs a single unified `ccusage <view> --by-agent` scan.
+- **All incl. slow** runs a single unified scan, with `--by-agent` for Daily, Weekly, and Monthly.
 - Results can be filtered by model and exported as CSV or a Markdown summary.
 
 ### API
@@ -35,6 +35,8 @@ Returns `{ view, rows, totals, scannedAt, engine, providers, warnings? }`. Only 
 - **Blocks** (5-hour billing windows) are Claude-only and have no per-model cost split.
 - **Codex per-model costs are estimates** (marked ≈) in provider-scoped scans. Codex reports cost per period, so the viewer splits it by token share. Use **All incl. slow** for exact per-model costs.
 - **Sessions** are ordered by last activity. Claude sessions show their project path.
+- **Token totals** retain the CLI's canonical totals, including usage absent from model breakdowns. Codex reasoning counts are a subset of output tokens and are shown separately when reported; unified calendar scans omit that detail. Model filters exclude usage that cannot be assigned to a model and disclose the excluded amounts. Costs and rates derived from estimated model splits retain the ≈ marker.
+- **Exports** preserve partial-result warnings and distinguish requested from included providers in Markdown. CSV includes reported reasoning tokens, row type, scan status, failed providers, and notes. `unallocated` rows preserve usage without model attribution; `aggregate` rows have no per-model split; `warning` rows contain zero usage and describe failed providers. Sum `Total Tokens` and `Cost USD` across usage rows for the displayed totals. Reported reasoning is a non-additive detail; zero means none reported, including scans that omit that detail.
 
 ## Updating ccusage
 

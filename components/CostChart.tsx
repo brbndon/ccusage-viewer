@@ -11,19 +11,7 @@ import {
 } from "recharts";
 import type { CcusageRow, ViewKey } from "@/lib/ccusage";
 import { periodLabel, periodNoun } from "@/lib/ccusage";
-import { formatCompactNumber, formatMoney } from "@/lib/model-meta";
-
-function formatChartMoney(amount: number): string {
-  if (!Number.isFinite(amount) || Math.abs(amount) >= 0.01) {
-    return formatMoney(amount);
-  }
-
-  const formatted = Math.abs(amount).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 8,
-  });
-  return amount < 0 ? `-$${formatted}` : `$${formatted}`;
-}
+import { formatCompactNumber, formatChartMoney } from "@/lib/model-meta";
 
 interface TooltipPayloadItem {
   value: number;
@@ -31,6 +19,7 @@ interface TooltipPayloadItem {
     name: string;
     cost: number;
     tokens: number;
+    costEstimated: boolean;
   };
 }
 
@@ -52,7 +41,7 @@ function CustomTooltip({
       <div className="mt-1 flex items-center justify-between gap-4">
         <span className="text-slate-400">Cost:</span>
         <span className="num-tabular font-bold text-emerald-400">
-          {formatChartMoney(data.cost)}
+          {data.costEstimated ? "≈ " : ""}{formatChartMoney(data.cost)}
         </span>
       </div>
       <div className="flex items-center justify-between gap-4">
@@ -72,6 +61,7 @@ export default function CostChart({ rows, view }: { rows: CcusageRow[]; view: Vi
     name: periodLabel(r, view),
     cost: Number(r.totalCost ?? 0),
     tokens: Number(r.totalTokens ?? 0),
+    costEstimated: r.costEstimated === true,
   }));
 
   if (data.length === 0) {
@@ -90,6 +80,7 @@ export default function CostChart({ rows, view }: { rows: CcusageRow[]; view: Vi
     sum += d.cost;
   }
   const avg = data.length > 0 ? sum / data.length : 0;
+  const estimated = data.some((d) => d.costEstimated);
 
   return (
     <section aria-labelledby="cost-timeline-heading" className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs">
@@ -100,6 +91,7 @@ export default function CostChart({ rows, view }: { rows: CcusageRow[]; view: Vi
           </h2>
           <p className="text-xs text-slate-500">
             Spend trends across the last {data.length} {periodNoun(view, data.length)}
+            {estimated ? " · ≈ includes estimated model costs" : ""}
           </p>
         </div>
 
@@ -107,13 +99,13 @@ export default function CostChart({ rows, view }: { rows: CcusageRow[]; view: Vi
           <div className="flex items-center gap-1.5">
             <span className="text-slate-400">Avg:</span>
             <span className="num-tabular font-semibold text-slate-700">
-              {formatChartMoney(avg)}
+              {estimated ? "≈ " : ""}{formatChartMoney(avg)}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-slate-400">Peak:</span>
             <span className="num-tabular font-semibold text-amber-600">
-              {formatChartMoney(peak)}
+              {estimated ? "≈ " : ""}{formatChartMoney(peak)}
             </span>
           </div>
         </div>

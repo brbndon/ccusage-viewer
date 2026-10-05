@@ -128,3 +128,13 @@ export function formatMoney(n: number): string {
   });
   return n < 0 ? `-$${formatted}` : `$${formatted}`;
 }
+
+/** Preserve positive sub-cent spend in charts and audit summaries. */
+export function formatChartMoney(amount: number): string {
+  if (!Number.isFinite(amount) || Math.abs(amount) >= 0.01) return formatMoney(amount);
+  const formatted = Math.abs(amount).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 8,
+  });
+  return amount < 0 ? `-$${formatted}` : `$${formatted}`;
+}

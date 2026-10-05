@@ -19,7 +19,7 @@ import {
   type CcusageRow,
   type ViewKey,
 } from "@/lib/ccusage";
-import { formatCompactNumber, formatMoney } from "@/lib/model-meta";
+import { formatCompactNumber, formatChartMoney } from "@/lib/model-meta";
 
 type Metric = "cost" | "tokens";
 
@@ -48,8 +48,8 @@ function colorOf(agent: string): string {
   return AGENT_COLORS[agent] ?? OTHER_COLOR;
 }
 
-function formatMetric(metric: Metric, value: number): string {
-  return metric === "cost" ? formatMoney(value) : formatCompactNumber(value);
+function formatMetric(metric: Metric, value: number, estimated = false): string {
+  return metric === "cost" ? `${estimated ? "≈ " : ""}${formatChartMoney(value)}` : formatCompactNumber(value);
 }
 
 const compactTokens = new Intl.NumberFormat("en-US", {
@@ -64,7 +64,9 @@ const compactMoney = new Intl.NumberFormat("en-US", {
 });
 
 function formatAxisValue(metric: Metric, value: number): string {
-  return metric === "cost" ? compactMoney.format(value) : compactTokens.format(value);
+  return metric === "cost"
+    ? (value !== 0 && Math.abs(value) < 0.01 ? formatChartMoney(value) : compactMoney.format(value))
+    : compactTokens.format(value);
 }
 
 /** "2026-09-27" -> "Sep 27" for daily ticks; other periods pass through. */
@@ -84,6 +86,7 @@ const VIEW_PREFIX: Partial<Record<ViewKey, string>> = {
 interface TooltipPayloadItem {
   dataKey: string;
   value: number;
+  payload?: Record<string, string | number | boolean>;
 }
 
 function AgentTooltip({
@@ -113,7 +116,7 @@ function AgentTooltip({
             {agentLabel(item.dataKey)}
           </span>
           <span className="num-tabular font-semibold text-slate-100">
-            {formatMetric(metric, item.value)}
+            {formatMetric(metric, item.value, item.payload?.[`${item.dataKey}Estimated`] === true)}
           </span>
         </div>
       ))}
@@ -136,11 +139,12 @@ export default function AgentBreakdown({
     if (!showChart) return { chartData: [], chartKeys: [] as string[] };
     const keys = [...new Set(agents.map((a) => seriesKey(a.agent)))];
     const data = rows.map((row) => {
-      const point: Record<string, string | number> = { name: periodLabel(row, view) };
+      const point: Record<string, string | number | boolean> = { name: periodLabel(row, view) };
       for (const key of keys) point[key] = 0;
       for (const [agent, share] of agentSharesOfRow(row)) {
         point[seriesKey(agent)] =
           (point[seriesKey(agent)] as number) + (metric === "cost" ? share.cost : share.tokens);
+        point[`${seriesKey(agent)}Estimated`] ||= share.costEstimated;
       }
       return point;
     });
@@ -152,6 +156,7 @@ export default function AgentBreakdown({
   const valueOf = (a: { cost: number; tokens: number }) =>
     metric === "cost" ? a.cost : a.tokens;
   const total = agents.reduce((sum, a) => sum + valueOf(a), 0);
+  const estimated = agents.some((a) => a.costEstimated);
   const sortedAgents = [...agents].sort((a, b) => valueOf(b) - valueOf(a));
   const chartTitle = `${VIEW_PREFIX[view] ?? ""} ${metric === "cost" ? "cost" : "processed tokens"}`;
 
@@ -191,7 +196,7 @@ export default function AgentBreakdown({
       <div className={`mt-4 grid grid-cols-1 gap-6 ${showChart ? "lg:grid-cols-12" : ""}`}>
         <div className={showChart ? "lg:col-span-4" : ""}>
           <p className="num-tabular text-3xl font-bold tracking-tight text-slate-900">
-            {formatMetric(metric, total)}
+            {formatMetric(metric, total, estimated)}
           </p>
           <p className="text-xs text-slate-500">
             {rows.length} {periodNoun(view, rows.length)} · {agents.length}{" "}
@@ -215,19 +220,20 @@ export default function AgentBreakdown({
                       {agentLabel(a.agent)}
                     </span>
                     <span className="num-tabular text-sm font-semibold text-slate-900">
-                      {formatMetric(metric, valueOf(a))}
+                      {formatMetric(metric, valueOf(a), a.costEstimated)}
                     </span>
                   </div>
                   <p className="num-tabular mt-0.5 pl-4.5 text-xs text-slate-500">
-                    {share.toFixed(1)}% of {metric === "cost" ? "spend" : "tokens"} ·{" "}
+                    {metric === "cost" && estimated ? "≈ " : ""}{share.toFixed(1)}% of {metric === "cost" ? "spend" : "tokens"} ·{" "}
                     {metric === "cost"
                       ? `${formatCompactNumber(a.tokens)} tokens`
-                      : formatMoney(a.cost)}
+                      : formatMetric("cost", a.cost, a.costEstimated)}
                   </p>
                 </li>
               );
             })}
           </ul>
+          {estimated && <p className="mt-3 text-xs text-slate-500">≈ Costs derived from estimated model allocations.</p>}
         </div>
 
         {showChart && (

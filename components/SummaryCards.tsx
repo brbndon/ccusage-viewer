@@ -19,6 +19,9 @@ export default function SummaryCards({
   const outputTokens = totals.outputTokens || 0;
   const cacheReadTokens = totals.cacheReadTokens || 0;
   const cacheCreationTokens = totals.cacheCreationTokens || 0;
+  const reasoningTokens = totals.reasoningOutputTokens ?? 0;
+  const reasoningPct = totalTokens > 0 ? (reasoningTokens / totalTokens) * 100 : 0;
+  const estimateMark = totals.costEstimated ? "≈ " : "";
 
   // Calculate percentages
   const cachePct = totalTokens > 0 ? (cacheReadTokens / totalTokens) * 100 : 0;
@@ -58,7 +61,7 @@ export default function SummaryCards({
 
             <div className="mt-3 flex items-baseline gap-2">
               <span className="num-tabular text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-                {formatMoney(totals.totalCost)}
+                {estimateMark}{formatMoney(totals.totalCost)}
               </span>
               <span className="text-xs font-medium text-slate-500">USD</span>
             </div>
@@ -70,7 +73,7 @@ export default function SummaryCards({
                 Effective Rate
               </span>
               <span className="num-tabular text-sm font-semibold text-slate-800">
-                ${Number.isFinite(costPerMillion) ? costPerMillion.toFixed(3) : "0.000"}
+                {estimateMark}${Number.isFinite(costPerMillion) ? costPerMillion.toFixed(3) : "0.000"}
                 <span className="text-xs font-normal text-slate-500"> / Mtok</span>
               </span>
             </div>
@@ -80,7 +83,7 @@ export default function SummaryCards({
                 {periodCount ? `Avg / Period (${periodCount})` : "Avg / Period"}
               </span>
               <span className="num-tabular text-sm font-semibold text-slate-800">
-                {avgCostPerPeriod !== null ? formatMoney(avgCostPerPeriod) : "—"}
+                {avgCostPerPeriod !== null ? `${estimateMark}${formatMoney(avgCostPerPeriod)}` : "—"}
               </span>
             </div>
           </div>
@@ -169,7 +172,7 @@ export default function SummaryCards({
           </div>
 
           {/* Token Category Breakdown Grid */}
-          <div className="mt-4 grid grid-cols-2 gap-2.5 border-t border-slate-100 pt-3 sm:grid-cols-4">
+          <div className={`mt-4 grid grid-cols-2 gap-2.5 border-t border-slate-100 pt-3 ${reasoningTokens ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
             <div className="flex flex-col">
               <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
                 <span className="h-2 w-2 rounded-xs bg-emerald-500" />
@@ -221,6 +224,15 @@ export default function SummaryCards({
                 {cacheCreatePct.toFixed(1)}%
               </span>
             </div>
+            {reasoningTokens > 0 && (
+              <div className="flex flex-col">
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                  <span className="h-2 w-2 rounded-xs bg-slate-500" />Reported reasoning
+                </div>
+                <span className="num-tabular mt-0.5 text-sm font-semibold text-slate-800">{formatCompactNumber(reasoningTokens)}</span>
+                <span className="num-tabular text-[11px] text-slate-400">{reasoningPct.toFixed(1)}% · included in output</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
