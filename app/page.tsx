@@ -1,12 +1,17 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ScanControls from "@/components/ScanControls";
-import ScanProgress, { formatElapsed } from "@/components/ScanProgress";
+import EmptyState from "@/components/EmptyState";
+import ScanControls, { rangeForPreset } from "@/components/ScanControls";
+import ScanProgress, {
+  formatElapsed,
+  type ProviderProgress,
+} from "@/components/ScanProgress";
 import SummaryCards from "@/components/SummaryCards";
 import CostChart from "@/components/CostChart";
 import ExportActions from "@/components/ExportActions";
 import AgentBreakdown from "@/components/AgentBreakdown";
 import PeriodTable from "@/components/PeriodTable";
+import SetupBanner from "@/components/SetupBanner";
 import type {
   CcusageRow,
   ProviderSlug,
@@ -85,6 +90,83 @@ function describeProviders(providerList?: string[]): string {
   return providerList.includes("all") ? "All providers" : providerList.join(", ");
 }
 
+interface ScanOutcome {
+  ok: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  body: any;
+}
+
+/**
+ * Reads a scan response: either plain JSON (validation errors) or the NDJSON
+ * progress stream, which ends with one `result` or `error` event.
+ */
+async function readScanResponse(
+  res: Response,
+  onProvider: (provider: string, ok: boolean, ms: number) => void
+): Promise<ScanOutcome> {
+  if (!res.headers.get("content-type")?.includes("ndjson") || !res.body) {
+    return { ok: res.ok, body: await res.json() };
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let outcome: ScanOutcome | null = null;
+
+  function handleLine(line: string) {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === "provider") {
+      onProvider(event.provider, event.ok, event.ms);
+    } else if (event.type === "result") {
+      outcome = { ok: true, body: event.body };
+    } else if (event.type === "error") {
+      outcome = { ok: false, body: event.body };
+    }
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    lines.forEach(handleLine);
+    if (done) break;
+  }
+  handleLine(buffer);
+  if (!outcome) throw new Error("Scan ended before returning results");
+  return outcome;
+}
+
+type SetupState = {
+  status: "checking" | "ready" | "missing";
+  detail?: string;
+  /** Providers whose local data folder exists on this machine. */
+  detected?: ProviderSlug[];
+};
+
+/** Preflight: is the ccusage CLI installed and runnable? */
+async function fetchSetup(): Promise<SetupState> {
+  try {
+    const res = await fetch("/api/status");
+    const body = (await res.json()) as {
+      ok?: boolean;
+      detail?: string;
+      detected?: unknown;
+    };
+    if (!body.ok) return { status: "missing", detail: body.detail };
+    const detected = Array.isArray(body.detected)
+      ? body.detected.filter(
+          (slug): slug is ProviderSlug =>
+            typeof slug === "string" && isProviderSlug(slug)
+        )
+      : undefined;
+    return { status: "ready", detected };
+  } catch {
+    // Status is advisory; if it cannot be reached, let the scan report errors.
+    return { status: "ready" };
+  }
+}
+
 function ScanSkeleton() {
   return (
     <div aria-hidden="true" className="flex flex-col gap-4">
@@ -137,6 +219,9 @@ export default function Home() {
   const [lastEngine, setLastEngine] = useState<ScanEngine | null>(null);
   const [lastSuccessfulRange, setLastSuccessfulRange] = useState({ since: "", until: "" });
   const [rawOutputOpen, setRawOutputOpen] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
+  const [setup, setSetup] = useState<SetupState>({ status: "checking" });
+  const [providerProgress, setProviderProgress] = useState<ProviderProgress>({});
 
   const [scanQuery, setScanQuery] = useState<{
     view: ViewKey;
@@ -157,6 +242,48 @@ export default function Home() {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // First launch only: once preferences and detection are both known, and the
+  // user has no saved selection, start from the agents found on this machine.
+  const detectionRef = useRef<{
+    detected: ProviderSlug[] | null;
+    prefsLoaded: boolean;
+    hasSavedPrefs: boolean;
+    applied: boolean;
+  }>({ detected: null, prefsLoaded: false, hasSavedPrefs: false, applied: false });
+
+  const applyDetectedDefaults = useCallback(() => {
+    const state = detectionRef.current;
+    if (state.applied || !state.prefsLoaded || state.hasSavedPrefs || !state.detected) {
+      return;
+    }
+    state.applied = true;
+    const found = state.detected;
+    const hits = DEFAULT_PROVIDERS.filter((slug) => found.includes(slug));
+    if (hits.length > 0) setProviders(hits);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchSetup().then((next) => {
+      if (cancelled) return;
+      setSetup(next);
+      detectionRef.current.detected = next.detected ?? null;
+      applyDetectedDefaults();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyDetectedDefaults]);
+
+  async function recheckSetup() {
+    setRechecking(true);
+    const next = await fetchSetup();
+    setSetup(next);
+    detectionRef.current.detected = next.detected ?? null;
+    applyDetectedDefaults();
+    setRechecking(false);
+  }
+
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const saved = readPreferences();
@@ -164,10 +291,17 @@ export default function Home() {
         setView(saved.view);
         setProviders(saved.providers);
       }
+      // Recent usage is what people check most, and it scans fastest.
+      const [recentSince, recentUntil] = rangeForPreset("last30");
+      setSince(recentSince);
+      setUntil(recentUntil);
+      detectionRef.current.prefsLoaded = true;
+      detectionRef.current.hasSavedPrefs = saved !== null;
+      applyDetectedDefaults();
       setPreferencesLoaded(true);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, []);
+  }, [applyDetectedDefaults]);
 
   useEffect(() => {
     if (!preferencesLoaded) return;
@@ -236,10 +370,11 @@ export default function Home() {
     setError("");
     setScanCancelled(false);
     setAnnouncement("");
+    setProviderProgress({});
     setScanQuery({ view, since, until, providers });
 
     try {
-      const q = new URLSearchParams({ view });
+      const q = new URLSearchParams({ view, stream: "1" });
       if (since) q.set("since", since);
       if (until) q.set("until", until);
       if (providers === "all") {
@@ -251,8 +386,18 @@ export default function Home() {
       const res = await fetch(`/api/scan?${q.toString()}`, {
         signal: ctrl.signal,
       });
-      const body = await res.json();
-      if (!res.ok) {
+      const { ok, body } = await readScanResponse(res, (provider, done, ms) => {
+        if (reqIdRef.current === reqId) {
+          setProviderProgress((prev) => ({ ...prev, [provider]: { ok: done, ms } }));
+        }
+      });
+      if (!ok && body?.code === "ccusage_missing") {
+        if (reqIdRef.current === reqId) {
+          setSetup({ status: "missing", detail: body.detail });
+        }
+        return;
+      }
+      if (!ok) {
         throw new Error(
           body?.detail
             ? `${body.error}: ${body.detail}`
@@ -303,7 +448,7 @@ export default function Home() {
       }
 
       const canScan = providers === "all" || isViewSupportedByProviders(view, providers);
-      if (loading || !canScan) return;
+      if (loading || !canScan || setup.status === "missing") return;
 
       event.preventDefault();
       void scan();
@@ -311,7 +456,7 @@ export default function Home() {
 
     window.addEventListener("keydown", handleScanShortcut);
     return () => window.removeEventListener("keydown", handleScanShortcut);
-  }, [loading, providers, scan, view]);
+  }, [loading, providers, scan, setup.status, view]);
 
   // Derive model list from current loaded data
   const allModels = useMemo(() => breakdownModels(data?.rows ?? []), [data]);
@@ -439,6 +584,14 @@ export default function Home() {
         ) : null}
       </header>
 
+      {setup.status === "missing" && (
+        <SetupBanner
+          detail={setup.detail}
+          checking={rechecking}
+          onRecheck={recheckSetup}
+        />
+      )}
+
       {/* Primary Scan Controls Card */}
       <ScanControls
         view={view}
@@ -446,6 +599,8 @@ export default function Home() {
         until={until}
         loading={loading}
         providers={providers}
+        scanBlocked={setup.status === "missing"}
+        detected={setup.detected ?? null}
         onViewChange={setView}
         onSinceChange={setSince}
         onUntilChange={setUntil}
@@ -471,6 +626,8 @@ export default function Home() {
             until={scanQuery.until}
             elapsedSec={elapsedSec}
             hasPreviousData={data !== null && data.rows.length > 0}
+            providers={scanQuery.providers === "all" ? ["all"] : scanQuery.providers}
+            finished={providerProgress}
             reassurance={isSlowScan
               ? "Full-history scans can take 60–120s while ccusage reads local usage history. You can keep using the page while this runs."
               : "Provider-scoped scans usually finish in seconds. You can keep using the page while this runs."}
@@ -522,9 +679,15 @@ export default function Home() {
       )}
 
       {showEmptyHint && (
-        <div className="rounded-xl border border-dashed border-slate-200 bg-white/60 p-8 text-center text-sm text-slate-500">
-          <span className="font-semibold text-slate-800">Scan Usage</span> runs the local ccusage CLI for your selected providers and date range, then shows {view} usage, costs, and trends here.
-        </div>
+        <EmptyState
+          view={view}
+          detected={setup.detected ?? null}
+          rangeLabel={describeRange(since, until)}
+          isSlowScan={
+            providers === "all" ||
+            (Array.isArray(providers) && providers.includes("antigravity"))
+          }
+        />
       )}
 
       {showFirstScanSkeleton && <ScanSkeleton />}

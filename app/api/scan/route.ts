@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import path from "node:path";
 import { promisify } from "node:util";
 import {
   isDateParam,
@@ -11,12 +8,17 @@ import {
   normalizeDateParam,
   PROVIDERS,
   type ProviderSlug,
-  type ScanEngine,
   type ScanResponse,
   type ScanWarning,
   type ViewKey,
   VIEW_SUPPORT,
 } from "@/lib/ccusage";
+import {
+  cleanDetail,
+  rejectUntrustedRequest,
+  resolveCcusage,
+  type CcusageBinary,
+} from "@/lib/ccusage-server";
 import {
   mergeScanResults,
   normalizeProviderPayload,
@@ -24,7 +26,6 @@ import {
 } from "@/lib/ccusage-normalize";
 
 const execFileAsync = promisify(execFile);
-const requireFromRoute = createRequire(import.meta.url);
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -36,9 +37,6 @@ const DEFAULT_PROVIDERS: ProviderSlug[] = PROVIDERS.filter(
 
 /** Views where unified scans can attribute spend per agent via `--by-agent`. */
 const BY_AGENT_VIEWS: readonly ViewKey[] = ["daily", "weekly", "monthly"];
-
-const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
-const TRUSTED_FETCH_SITES = new Set(["same-origin", "none"]);
 
 class ProviderScanError extends Error {
   constructor(
@@ -57,108 +55,9 @@ class ScanSupersededError extends Error {
   }
 }
 
-/**
- * The scan API runs local commands and returns private usage data, so only
- * same-origin requests addressed to a loopback host are served. This blocks
- * other devices on the network, other websites (CSRF), and DNS rebinding.
- */
-function rejectUntrustedRequest(req: NextRequest): NextResponse | null {
-  const host = req.headers.get("host") ?? "";
-  let hostname = "";
-  try {
-    hostname = new URL(`http://${host}`).hostname;
-  } catch {
-    // Malformed Host header; rejected below.
-  }
-  if (!LOCAL_HOSTNAMES.has(hostname)) {
-    return NextResponse.json(
-      { error: "Forbidden: the scan API is only served on localhost" },
-      { status: 403 }
-    );
-  }
-
-  const fetchSite = req.headers.get("sec-fetch-site");
-  if (fetchSite !== null && !TRUSTED_FETCH_SITES.has(fetchSite)) {
-    return NextResponse.json(
-      { error: "Forbidden: cross-site scan requests are not allowed" },
-      { status: 403 }
-    );
-  }
-
-  const origin = req.headers.get("origin");
-  if (origin !== null) {
-    let originHost = "";
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      // Malformed or opaque ("null") origin; rejected below.
-    }
-    if (originHost !== host) {
-      return NextResponse.json(
-        { error: "Forbidden: cross-origin scan requests are not allowed" },
-        { status: 403 }
-      );
-    }
-  }
-
-  return null;
-}
-
-// Strip ANSI escapes and collapse whitespace so stderr stays a safe,
-// single-line detail string (server paths may otherwise leak verbatim).
-function cleanDetail(err: unknown): string {
-  const e = err as { stderr?: unknown; message?: unknown };
-  const raw = e?.stderr || e?.message || err;
-  return String(raw)
-    .replace(/\u001b\[[0-9;]*m/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1000);
-}
-
 function isTimeout(err: unknown): boolean {
   const e = err as { killed?: boolean; code?: string | number };
   return e?.killed === true || e?.code === "ETIMEDOUT";
-}
-
-interface CcusageBinary {
-  cliPath: string;
-  engine: ScanEngine;
-}
-
-let binaryPromise: Promise<CcusageBinary> | null = null;
-
-/**
- * Resolves the ccusage CLI installed from package.json. The exact version is
- * pinned with lockfile integrity hashes, so scans never download or execute
- * unreviewed releases. Update deliberately with `npm install ccusage@<version>`.
- */
-function resolveCcusage(): Promise<CcusageBinary> {
-  binaryPromise ??= (async () => {
-    // We need an on-disk executable path, not the bundler's numeric module ID.
-    const packagePath = requireFromRoute.resolve(
-      /* turbopackIgnore: true */ /* webpackIgnore: true */ "ccusage/package.json"
-    );
-    const packageDir = path.dirname(packagePath);
-    const pkg = JSON.parse(
-      await readFile(packagePath, "utf8")
-    ) as { version?: unknown; bin?: unknown };
-    const bin =
-      typeof pkg.bin === "string"
-        ? pkg.bin
-        : (pkg.bin as Record<string, unknown> | undefined)?.ccusage;
-    if (typeof pkg.version !== "string" || typeof bin !== "string") {
-      throw new Error("node_modules/ccusage/package.json is missing version or bin");
-    }
-    return {
-      cliPath: path.join(packageDir, bin),
-      engine: { spec: `ccusage@${pkg.version}`, version: pkg.version },
-    };
-  })().catch((err) => {
-    binaryPromise = null;
-    throw err;
-  });
-  return binaryPromise;
 }
 
 async function runCcusage(
@@ -267,14 +166,74 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  const scan: ScanParams = { view: viewRaw, since, until, isAll, requestedProviders };
+
+  if (url.searchParams.get("stream") !== "1") {
+    return executeScan(scan, req.signal);
+  }
+
+  // Streamed form: NDJSON progress events, then one terminal `result` or
+  // `error` event carrying the same body/status the plain JSON form returns.
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const emit = (event: object) => {
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          // Client went away; the scan is aborted through req.signal.
+        }
+      };
+      emit({
+        type: "start",
+        providers: isAll ? ["all"] : requestedProviders,
+      });
+      const res = await executeScan(scan, req.signal, (provider, ok, ms) =>
+        emit({ type: "provider", provider, ok, ms })
+      );
+      const body = await res.json();
+      emit(
+        res.ok
+          ? { type: "result", body }
+          : { type: "error", status: res.status, body }
+      );
+      try {
+        controller.close();
+      } catch {
+        // Already closed by a cancelled client.
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+interface ScanParams {
+  view: ViewKey;
+  since: string;
+  until: string;
+  isAll: boolean;
+  requestedProviders: ProviderSlug[];
+}
+
+async function executeScan(
+  { view: viewRaw, since, until, isAll, requestedProviders }: ScanParams,
+  reqSignal: AbortSignal,
+  onProvider?: (provider: ProviderSlug, ok: boolean, ms: number) => void
+): Promise<NextResponse> {
   let binary: CcusageBinary;
   try {
     binary = await resolveCcusage();
-  } catch (err) {
+  } catch {
     return NextResponse.json(
       {
         error: "ccusage is not installed. Run npm install.",
-        detail: cleanDetail(err),
+        code: "ccusage_missing",
+        detail: "The ccusage CLI was not found in node_modules.",
       },
       { status: 500 }
     );
@@ -284,7 +243,7 @@ export async function GET(req: NextRequest) {
   activeScan?.abort(new ScanSupersededError());
   const scanCtrl = new AbortController();
   activeScan = scanCtrl;
-  const signal = AbortSignal.any([req.signal, scanCtrl.signal]);
+  const signal = AbortSignal.any([reqSignal, scanCtrl.signal]);
   const startedAt = Date.now();
   const dateArgs = [
     ...(since ? ["--since", since] : []),
@@ -319,14 +278,21 @@ export async function GET(req: NextRequest) {
     // the others, so failures are reported as warnings.
     const settled = await Promise.allSettled(
       requestedProviders.map(async (provider): Promise<ProviderScanResult> => {
+        const providerStart = Date.now();
         try {
           const parsed = await runCcusage(
             cliPath,
             [provider, viewRaw, "--json", ...dateArgs],
             signal
           );
-          return { provider, ...normalizeProviderPayload(provider, viewRaw, parsed) };
+          const result = {
+            provider,
+            ...normalizeProviderPayload(provider, viewRaw, parsed),
+          };
+          onProvider?.(provider, true, Date.now() - providerStart);
+          return result;
         } catch (childErr: unknown) {
+          onProvider?.(provider, false, Date.now() - providerStart);
           throw new ProviderScanError(provider, childErr);
         }
       })

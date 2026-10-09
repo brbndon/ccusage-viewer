@@ -1,11 +1,16 @@
 "use client";
 
+export type ProviderProgress = Record<string, { ok: boolean; ms: number }>;
+
 interface Props {
   view: string;
   since: string;
   until: string;
   elapsedSec: number;
   hasPreviousData: boolean;
+  /** Providers in this scan; `["all"]` for the unified scan (no per-provider progress). */
+  providers: string[];
+  finished: ProviderProgress;
   reassurance: string;
   onCancel: () => void;
 }
@@ -23,7 +28,7 @@ function stepFor(elapsedSec: number): number {
 const STEP_CUTOFFS_SEC = [8, 30, 90] as const;
 
 const STEPS = [
-  "Resolving ccusage@latest",
+  "Starting ccusage",
   "Reading local usage history",
   "Aggregating usage totals",
   "Finalizing results",
@@ -42,9 +47,13 @@ export default function ScanProgress({
   until,
   elapsedSec,
   hasPreviousData,
+  providers,
+  finished,
   reassurance,
   onCancel,
 }: Props) {
+  const perProvider = providers.length > 0 && !providers.includes("all");
+  const doneCount = providers.filter((name) => finished[name]).length;
   const active = stepFor(elapsedSec);
   const range = since || until ? `${since || "…"} → ${until || "now"}` : "all history";
 
@@ -89,7 +98,7 @@ export default function ScanProgress({
               announces exactly once on mount instead of on every timer tick. */}
           <p role="status" className="mt-0.5 text-sm text-gray-600">
             <code className="rounded bg-white/80 px-1 font-mono text-xs text-gray-800">
-              npx --yes ccusage@latest {view} --json
+              ccusage {view} --json
             </code>{" "}
             · {range}
             {hasPreviousData ? " · keeping previous results visible" : ""}
@@ -104,6 +113,42 @@ export default function ScanProgress({
             <div className="scan-progress-bar h-full w-1/3 rounded-full bg-blue-600" />
           </div>
 
+          {perProvider ? (
+            <div className="mt-3">
+              <p className="text-xs font-medium text-gray-700">
+                {doneCount} of {providers.length} providers finished
+              </p>
+              <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                {providers.map((name) => {
+                  const result = finished[name];
+                  return (
+                    <li
+                      key={name}
+                      className={`flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+                        !result
+                          ? "border-blue-200 bg-white text-gray-600"
+                          : result.ok
+                            ? "border-green-200 bg-green-50 text-green-800"
+                            : "border-red-200 bg-red-50 text-red-800"
+                      }`}
+                    >
+                      <span aria-hidden="true">
+                        {!result ? "…" : result.ok ? "✓" : "✕"}
+                      </span>
+                      {name}
+                      {result && (
+                        <span className="font-mono text-[10px] opacity-70">
+                          {result.ms < 1000
+                            ? `${result.ms}ms`
+                            : `${(result.ms / 1000).toFixed(1)}s`}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : (
           <ol className="mt-3 grid gap-1 text-sm sm:grid-cols-2">
             {STEPS.map((label, i) => {
               const done = i < active;
@@ -130,6 +175,7 @@ export default function ScanProgress({
               );
             })}
           </ol>
+          )}
 
           <p className="mt-3 text-xs text-gray-600">{reassurance}</p>
         </div>

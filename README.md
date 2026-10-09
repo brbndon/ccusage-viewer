@@ -4,12 +4,17 @@ Local Next.js dashboard for auditing AI coding-tool usage and spend on this Mac,
 
 ## Quick start
 
+Requires Node.js 20.9 or newer.
+
 ```bash
-npm install
-npm run dev
+git clone <repo-url> ccusage-viewer
+cd ccusage-viewer
+npm run setup   # installs dependencies (including ccusage), then starts the app
 ```
 
-Open http://localhost:3000, pick providers, a view (Daily / Weekly / Monthly / Session / Blocks), and an optional date range, then press **Scan Usage** (or ⌘ Enter).
+`ccusage` is installed by `npm install`; no separate global install is needed. If it is missing, the page says so before you scan and shows the command to run. Next time, `npm run dev` is enough.
+
+Open http://localhost:3000. On first launch the viewer pre-selects the agents it finds data folders for (Claude Code, Codex, OpenCode, and others) and a 30-day range. Pick a view (Daily / Weekly / Monthly / Session / Blocks), adjust providers or dates, then press **Scan Usage** (or ⌘ Enter). Provider-scoped scans show each provider finishing as it completes.
 
 ## How it works
 
@@ -27,6 +32,8 @@ Open http://localhost:3000, pick providers, a view (Daily / Weekly / Monthly / S
 | `view` | `daily` (default), `weekly`, `monthly`, `session`, `blocks` |
 | `providers` | Comma-separated provider slugs, `all` for the unified scan, or omitted for the default set |
 | `since` / `until` | `YYYY-MM-DD` or `YYYYMMDD`, inclusive |
+
+Add `stream=1` for newline-delimited JSON progress events (`start`, one `provider` per finished provider, then a final `result` or `error` carrying the same body as the plain form). `GET /api/status` reports whether ccusage runs and which agents have local data folders.
 
 Returns `{ view, rows, totals, scannedAt, engine, providers, warnings? }`. Only one scan runs at a time; starting a new scan cancels the previous one.
 

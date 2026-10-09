@@ -28,7 +28,7 @@ function localDateValue(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function rangeForPreset(preset: DatePreset, now = new Date()): [string, string] {
+export function rangeForPreset(preset: DatePreset, now = new Date()): [string, string] {
   if (preset === "all") return ["", ""];
 
   const until = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -47,6 +47,10 @@ interface Props {
   until: string;
   loading: boolean;
   providers: "all" | ProviderSlug[];
+  /** ccusage was not found; scanning cannot work until it is installed. */
+  scanBlocked?: boolean;
+  /** Providers whose local data folder exists; null until detection finishes. */
+  detected: ProviderSlug[] | null;
   onViewChange: (v: ViewKey) => void;
   onSinceChange: (v: string) => void;
   onUntilChange: (v: string) => void;
@@ -87,8 +91,12 @@ export default function ScanControls(p: Props) {
     return null;
   }
 
+  function hasNoData(slug: ProviderSlug): boolean {
+    return p.detected !== null && !p.detected.includes(slug);
+  }
+
   const currentViewConflict = getViewConflict(p.view);
-  const isScanDisabled = p.loading || !!currentViewConflict;
+  const isScanDisabled = p.loading || !!currentViewConflict || !!p.scanBlocked;
 
   const selectedOverflow: ProviderSlug[] =
     p.providers === "all"
@@ -152,14 +160,16 @@ export default function ScanControls(p: Props) {
                 type="button"
                 onClick={() => toggleProvider(slug)}
                 aria-pressed={active}
+                title={hasNoData(slug) ? "No local data folder found for this agent" : undefined}
                 className={`btn-press rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
                   active
                     ? "border-blue-600 bg-blue-50 text-blue-800 shadow-2xs"
                     : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
-                }`}
+                } ${hasNoData(slug) ? "opacity-60" : ""}`}
               >
                 {active ? "✓ " : ""}
                 {slug.charAt(0).toUpperCase() + slug.slice(1)}
+                {hasNoData(slug) ? " · no data" : ""}
               </button>
             );
           })}
@@ -183,6 +193,7 @@ export default function ScanControls(p: Props) {
                 <option key={slug} value={slug}>
                   {isSel ? "✓ " : "  "}
                   {slug}
+                  {hasNoData(slug) ? " (no data found)" : ""}
                 </option>
               );
             })}
@@ -277,7 +288,9 @@ export default function ScanControls(p: Props) {
               disabled={isScanDisabled}
               aria-busy={p.loading}
               aria-keyshortcuts="Meta+Enter Control+Enter"
-              title={currentViewConflict ?? undefined}
+              title={
+                p.scanBlocked ? "Install ccusage first" : (currentViewConflict ?? undefined)
+              }
               className="btn-press flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {p.loading && (
