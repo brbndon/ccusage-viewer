@@ -138,7 +138,7 @@ export default function SummaryCards({
             <div className="mt-2 flex items-baseline gap-2">
               <AnimatedNumber
                 value={totalTokens}
-                format={formatCompactNumber}
+                format={(n) => formatCompactNumber(Math.round(n))}
                 className="num-tabular text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl"
               />
               <span className="text-xs font-medium text-slate-500">tokens processed</span>

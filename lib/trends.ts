@@ -27,9 +27,14 @@ function addDays(date: Date, days: number): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 }
 
+/** Longest series built (about three years); a runaway `since` must not freeze the UI. */
+const MAX_SERIES_DAYS = 1100;
+
 /**
  * Daily rows as a gap-free series. The scanned range widens the bounds so
- * quiet days at either end still count (a 30-day scan yields 30 days).
+ * quiet days at either end still count (a 30-day scan yields 30 days). The
+ * series always runs to today, or to `until` when that is earlier, so an open
+ * range ("All history") still sees recent quiet days.
  */
 export function dailySeries(
   rows: CcusageRow[],
@@ -56,7 +61,9 @@ export function dailySeries(
   if (since && since < start) start = since;
   // Extend to the scan's end date, but never into the future.
   const rangeEnd = until && until < todayStart ? until : todayStart;
-  if (until && rangeEnd > end) end = rangeEnd;
+  if (rangeEnd > end) end = rangeEnd;
+  const earliest = addDays(end, 1 - MAX_SERIES_DAYS);
+  if (start < earliest) start = earliest;
 
   const series: DayPoint[] = [];
   for (let d = start; d <= end; d = addDays(d, 1)) {
@@ -68,6 +75,12 @@ export function dailySeries(
 
 function sum(points: DayPoint[], field: "cost" | "tokens"): number {
   return points.reduce((acc, p) => acc + p[field], 0);
+}
+
+/** The series without today when today is its last day: a partial day skews averages and trends. */
+export function completedDays(series: DayPoint[], today = new Date()): DayPoint[] {
+  if (series.length > 2 && series[series.length - 1].date === dayKey(today)) return series.slice(0, -1);
+  return series;
 }
 
 export interface WindowComparison {
@@ -99,16 +112,23 @@ export function compareWindows(series: DayPoint[]): WindowComparison | null {
 export interface MonthOutlook {
   /** True when the series covers the month's first day, so month-to-date is complete. */
   complete: boolean;
+  /** True when the series ends in the current month; a past month has nothing left to project. */
+  current: boolean;
   monthLabel: string;
   monthToDate: number;
   projected: number;
   daysLeft: number;
-  /** Average daily spend across the whole series, times 30. */
+  /** Average daily spend over the last `runRateDays` completed days, times 30. */
   runRate: number;
+  runRateDays: number;
 }
 
-/** Month-end projection: month-to-date plus the trailing 7-day pace for the remaining days. */
-export function monthOutlook(series: DayPoint[]): MonthOutlook | null {
+/**
+ * Month-end projection: month-to-date plus the trailing 7-day pace for the remaining days.
+ * Pace and run rate use completed days only; the run rate looks at the last 30 so a long
+ * scan reflects recent habits rather than the whole history.
+ */
+export function monthOutlook(series: DayPoint[], today = new Date()): MonthOutlook | null {
   if (series.length === 0) return null;
   const last = parseDay(series[series.length - 1].date)!;
   const monthStart = new Date(last.getFullYear(), last.getMonth(), 1);
@@ -116,17 +136,21 @@ export function monthOutlook(series: DayPoint[]): MonthOutlook | null {
   const daysLeft = daysInMonth - last.getDate();
 
   const inMonth = series.filter((p) => parseDay(p.date)! >= monthStart);
-  const trailing = series.slice(-7);
+  const settled = completedDays(series, today);
+  const trailing = settled.slice(-7);
   const pace = sum(trailing, "cost") / trailing.length;
   const monthToDate = sum(inMonth, "cost");
+  const recent = settled.slice(-30);
 
   return {
     complete: parseDay(series[0].date)! <= monthStart,
+    current: last.getFullYear() === today.getFullYear() && last.getMonth() === today.getMonth(),
     monthLabel: last.toLocaleDateString("en-US", { month: "long" }),
     monthToDate,
     projected: monthToDate + pace * daysLeft,
     daysLeft,
-    runRate: (sum(series, "cost") / series.length) * 30,
+    runRate: (sum(recent, "cost") / recent.length) * 30,
+    runRateDays: recent.length,
   };
 }
 
@@ -187,7 +211,7 @@ export function rollingAverage(values: number[], window: number): number[] {
 }
 
 export interface HeatmapCell extends DayPoint {
-  /** 0 = no usage, 1–4 = quartile of active-day spend. */
+  /** 0 = no usage, 1–4 = percentile band of active-day spend. */
   level: number;
 }
 
@@ -195,11 +219,21 @@ export interface HeatmapCell extends DayPoint {
 export function heatmapWeeks(series: DayPoint[]): (HeatmapCell | null)[][] {
   if (series.length === 0) return [];
   const active = series.filter((p) => p.cost > 0).map((p) => p.cost).sort((a, b) => a - b);
-  const quantile = (q: number) => active[Math.min(active.length - 1, Math.floor(q * active.length))] ?? 0;
-  const cuts = [quantile(0.25), quantile(0.5), quantile(0.75)];
+  // Share of active days that cost strictly less, so ties share a band and the
+  // darkest band is reachable even with only a few active days.
+  const belowCount = (cost: number) => {
+    let lo = 0;
+    let hi = active.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (active[mid] < cost) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
   const levelOf = (p: DayPoint) => {
     if (p.cost <= 0) return p.tokens > 0 ? 1 : 0;
-    return 1 + cuts.filter((c) => p.cost > c).length;
+    return 1 + Math.min(3, Math.floor((belowCount(p.cost) / active.length) * 4));
   };
 
   const weeks: (HeatmapCell | null)[][] = [];

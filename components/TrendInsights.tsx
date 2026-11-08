@@ -6,6 +6,7 @@ import { formatMoney } from "@/lib/model-meta";
 import {
   WEEKDAYS,
   compareWindows,
+  completedDays,
   dailySeries,
   monthOutlook,
   streaks,
@@ -16,12 +17,15 @@ import Sparkline from "@/components/Sparkline";
 
 const PLAN_KEY = "ccusage-viewer.plan.v1";
 const PLAN_PRESETS = [20, 100, 200] as const;
+const MAX_PLAN = 100_000;
+/** Numbers count up once the section's entrance has made them visible. */
+const COUNT_DELAY_MS = 250;
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 function readPlan(): number | null {
   try {
     const value = Number(window.localStorage.getItem(PLAN_KEY));
-    return Number.isFinite(value) && value > 0 ? value : null;
+    return Number.isFinite(value) && value > 0 && value <= MAX_PLAN ? value : null;
   } catch {
     return null;
   }
@@ -36,20 +40,9 @@ function savePlan(value: number | null) {
   }
 }
 
-function Tile({
-  label,
-  index,
-  children,
-}: {
-  label: string;
-  index: number;
-  children: React.ReactNode;
-}) {
+function Tile({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div
-      className="reveal flex min-w-0 flex-col rounded-lg border border-slate-200/80 bg-slate-50/60 p-4"
-      style={{ "--i": index } as React.CSSProperties}
-    >
+    <div className="flex min-w-0 flex-col rounded-lg border border-slate-200/80 bg-slate-50/60 p-4">
       <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</span>
       {children}
     </div>
@@ -71,10 +64,15 @@ export default function TrendInsights({
   );
   // Only rendered after a client-side scan, so storage is available on first render.
   const [plan, setPlan] = useState<number | null>(readPlan);
+  // Text being typed in the custom field; null shows the saved plan instead.
+  const [draft, setDraft] = useState<string | null>(null);
 
   if (view !== "daily") {
     return (
-      <p className="reveal rounded-xl border border-dashed border-slate-200 bg-white/60 px-4 py-3 text-xs text-slate-500">
+      <p
+        className="reveal rounded-xl border border-dashed border-slate-200 bg-white/60 px-4 py-3 text-xs text-slate-500"
+        style={{ "--i": 2 } as React.CSSProperties}
+      >
         Trends, streaks, the month-end projection, and the plan comparison use{" "}
         <span className="font-semibold text-slate-700">Daily</span> granularity. Switch to Daily and scan to see them.
       </p>
@@ -86,10 +84,14 @@ export default function TrendInsights({
   const mark = estimated ? "≈ " : "";
   const money = (n: number) => `${mark}${formatMoney(n)}`;
 
-  const windows = compareWindows(series);
+  // Today is still in progress, so trends and averages look at completed days.
+  const settled = completedDays(series);
+  const throughYesterday = settled.length < series.length;
+  const windows = compareWindows(settled);
   const outlook = monthOutlook(series)!;
+  const projecting = outlook.complete && outlook.current;
   const streak = streaks(series);
-  const weekdays = weekdayAverages(series);
+  const weekdays = weekdayAverages(settled);
   const busiest = weekdays.indexOf(Math.max(...weekdays));
   const weekdayMax = weekdays[busiest] || 1;
   const recentDays = series.slice(-14);
@@ -105,7 +107,8 @@ export default function TrendInsights({
   return (
     <section
       aria-labelledby="trends-heading"
-      className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs"
+      className="reveal rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs"
+      style={{ "--i": 2 } as React.CSSProperties}
     >
       <div className="flex flex-wrap items-end justify-between gap-2 border-b border-slate-100 pb-3">
         <div>
@@ -120,11 +123,12 @@ export default function TrendInsights({
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {windows && (
-          <Tile label={`Last ${windows.days} days`} index={0}>
+          <Tile label={`Last ${windows.days} ${throughYesterday ? "full " : ""}days`}>
             <div className="mt-1.5 flex items-baseline gap-2">
               <AnimatedNumber
                 value={windows.current}
                 format={money}
+                delayMs={COUNT_DELAY_MS}
                 className="num-tabular text-2xl font-bold tracking-tight text-slate-900"
               />
               {windows.change !== null && (
@@ -151,18 +155,21 @@ export default function TrendInsights({
           </Tile>
         )}
 
-        <Tile label={outlook.complete ? `Projected ${outlook.monthLabel}` : "Monthly run rate"} index={1}>
+        <Tile label={projecting ? `Projected ${outlook.monthLabel}` : "Monthly run rate"}>
           <AnimatedNumber
-            value={outlook.complete ? outlook.projected : outlook.runRate}
+            value={projecting ? outlook.projected : outlook.runRate}
             format={money}
+            delayMs={COUNT_DELAY_MS}
             className="num-tabular mt-1.5 text-2xl font-bold tracking-tight text-slate-900"
           />
           <p className="num-tabular text-[11px] text-slate-500">
-            {outlook.complete
+            {projecting
               ? `${money(outlook.monthToDate)} so far · ${outlook.daysLeft} ${outlook.daysLeft === 1 ? "day" : "days"} left at the 7-day pace`
-              : "Average daily spend × 30. Scan from the 1st for a month-end projection."}
+              : `Average of the last ${outlook.runRateDays} days × 30. ${
+                  outlook.current ? "Scan from the 1st for a month-end projection." : "Projections need a range that ends this month."
+                }`}
           </p>
-          {outlook.complete && outlook.projected > 0 && (
+          {projecting && outlook.projected > 0 && (
             <div className="mt-auto pt-3">
               <div className="h-1.5 overflow-hidden rounded-full bg-slate-200/70">
                 <div
@@ -170,12 +177,12 @@ export default function TrendInsights({
                   style={{ "--fill": Math.min(1, outlook.monthToDate / outlook.projected) } as React.CSSProperties}
                 />
               </div>
-              <p className="mt-1 text-[10px] text-slate-400">month-to-date of projected</p>
+              <p className="mt-1 text-[11px] text-slate-500">month-to-date of projected</p>
             </div>
           )}
         </Tile>
 
-        <Tile label="Current streak" index={2}>
+        <Tile label="Current streak">
           <p className="num-tabular mt-1.5 text-2xl font-bold tracking-tight text-slate-900">
             {streak.current} <span className="text-sm font-semibold text-slate-500">{streak.current === 1 ? "day" : "days"}</span>
           </p>
@@ -196,7 +203,7 @@ export default function TrendInsights({
           </ol>
         </Tile>
 
-        <Tile label="Busiest weekday" index={3}>
+        <Tile label="Busiest weekday">
           <p className="mt-1.5 text-2xl font-bold tracking-tight text-slate-900">{WEEKDAY_NAMES[busiest]}s</p>
           <p className="num-tabular text-[11px] text-slate-500">
             {money(weekdays[busiest])} on an average {WEEKDAY_NAMES[busiest]}
@@ -208,7 +215,7 @@ export default function TrendInsights({
                   className={`grow-up w-full rounded-t-[3px] ${i === busiest ? "bg-blue-600" : "bg-slate-300"}`}
                   style={{ height: `${Math.max(6, (v / weekdayMax) * 100)}%`, "--i": i } as React.CSSProperties}
                 />
-                <span className="text-[9px] font-medium text-slate-400">{WEEKDAYS[i][0]}</span>
+                <span className="text-[10px] font-medium text-slate-500">{WEEKDAYS[i][0]}</span>
               </div>
             ))}
           </div>
@@ -216,14 +223,16 @@ export default function TrendInsights({
       </div>
 
       {/* Subscription value: the number built-in usage meters don't show. */}
-      <div
-        className="reveal mt-3 flex flex-col gap-3 rounded-lg border border-blue-100 bg-gradient-to-r from-blue-50/80 via-white to-white p-4 lg:flex-row lg:items-center lg:justify-between"
-        style={{ "--i": 4 } as React.CSSProperties}
-      >
+      <div className="mt-3 flex flex-col gap-3 rounded-lg border border-blue-100 bg-gradient-to-r from-blue-50/80 via-white to-white p-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <p className="text-sm text-slate-700">
             At API prices this usage is worth{" "}
-            <AnimatedNumber value={monthlyValue} format={money} className="num-tabular font-bold text-slate-900" />
+            <AnimatedNumber
+              value={monthlyValue}
+              format={money}
+              delayMs={COUNT_DELAY_MS}
+              className="num-tabular font-bold text-slate-900"
+            />
             <span className="text-slate-500"> / month</span>
             {ratio !== null && (
               <>
@@ -241,9 +250,9 @@ export default function TrendInsights({
           </p>
           <p className="mt-0.5 text-[11px] text-slate-500">
             {ratio === null
-              ? "Pick what you pay each month to see whether your subscription pays for itself."
+              ? "Pick what you pay each month to compare it with this usage at API prices."
               : ratio >= 1
-                ? `Your subscription saves about ${money(monthlyValue - plan!)} a month compared with paying per token.`
+                ? `About ${money(monthlyValue - plan!)} a month more than the plan costs, counting the agents and models shown above.`
                 : "Paying per token would currently cost less than this plan."}
           </p>
         </div>
@@ -266,19 +275,25 @@ export default function TrendInsights({
             </button>
           ))}
           <label className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 focus-within:border-blue-500">
-            <span className="text-slate-400">$</span>
+            <span className="text-slate-500">$</span>
             <input
               type="number"
               min={1}
+              max={MAX_PLAN}
+              step="any"
               inputMode="decimal"
               aria-label="Custom monthly plan price in USD"
               placeholder="Other"
-              value={plan !== null && !PLAN_PRESETS.includes(plan as (typeof PLAN_PRESETS)[number]) ? plan : ""}
+              value={
+                draft ?? (plan !== null && !PLAN_PRESETS.includes(plan as (typeof PLAN_PRESETS)[number]) ? String(plan) : "")
+              }
               onChange={(e) => {
+                setDraft(e.target.value);
                 const next = Number(e.target.value);
-                choosePlan(Number.isFinite(next) && next > 0 ? next : null);
+                choosePlan(Number.isFinite(next) && next > 0 && next <= MAX_PLAN ? next : null);
               }}
-              className="w-14 bg-transparent text-slate-800 outline-hidden placeholder:text-slate-400"
+              onBlur={() => setDraft(null)}
+              className="w-14 bg-transparent text-slate-800 outline-hidden placeholder:text-slate-500"
             />
           </label>
         </div>

@@ -18,10 +18,13 @@ export default function AnimatedNumber({
   value,
   format,
   className,
+  delayMs = 0,
 }: {
   value: number;
   format: (n: number) => string;
   className?: string;
+  /** Hold the count until a staggered entrance has made the number visible. */
+  delayMs?: number;
 }) {
   const reduced = useReducedMotion();
   const [shown, setShown] = useState(0);
@@ -31,10 +34,10 @@ export default function AnimatedNumber({
     if (reduced) return;
     const from = shownRef.current;
     if (from === value) return;
-    const started = performance.now();
+    const started = performance.now() + delayMs;
     let frame = 0;
     const tick = (now: number) => {
-      const t = Math.min(1, (now - started) / DURATION_MS);
+      const t = Math.min(1, Math.max(0, (now - started) / DURATION_MS));
       const next = from + (value - from) * easeOut(t);
       shownRef.current = next;
       setShown(next);
@@ -42,7 +45,7 @@ export default function AnimatedNumber({
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [reduced, value]);
+  }, [delayMs, reduced, value]);
 
   return (
     <span className={className}>

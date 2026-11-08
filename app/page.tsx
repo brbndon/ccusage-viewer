@@ -926,9 +926,7 @@ export default function Home() {
                   scannedAt={data.scannedAt}
                   periodCount={displayRows.length}
                 />
-                <div className="reveal" style={{ "--i": 2 } as React.CSSProperties}>
-                  <TrendInsights rows={displayRows} view={data.view} range={lastSuccessfulRange} />
-                </div>
+                <TrendInsights rows={displayRows} view={data.view} range={lastSuccessfulRange} />
                 <div className="reveal" style={{ "--i": 3 } as React.CSSProperties}>
                   <CostChart rows={displayRows} view={data.view} />
                 </div>
