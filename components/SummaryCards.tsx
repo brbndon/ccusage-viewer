@@ -2,6 +2,7 @@
 
 import type { CcusageTotals } from "@/lib/ccusage";
 import { formatCompactNumber, formatMoney } from "@/lib/model-meta";
+import AnimatedNumber from "@/components/AnimatedNumber";
 
 interface SummaryCardsProps {
   totals: CcusageTotals;
@@ -47,22 +48,28 @@ export default function SummaryCards({
     <section aria-label="Usage Summary" className="flex flex-col gap-3">
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         {/* Financial Command Card */}
-        <div className="flex flex-col justify-between rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs lg:col-span-5">
+        <div
+          className="reveal relative flex flex-col justify-between overflow-hidden rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs lg:col-span-5"
+          style={{ "--i": 0 } as React.CSSProperties}
+        >
+          <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-blue-400/10 blur-3xl" />
           <div>
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Total Spend
               </span>
               <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                <span className="live-dot h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 <span>Scanned {new Date(scannedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
               </div>
             </div>
 
             <div className="mt-3 flex items-baseline gap-2">
-              <span className="num-tabular text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-                {estimateMark}{formatMoney(totals.totalCost)}
-              </span>
+              <AnimatedNumber
+                value={totals.totalCost}
+                format={(n) => `${estimateMark}${formatMoney(n)}`}
+                className="num-tabular text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl"
+              />
               <span className="text-xs font-medium text-slate-500">USD</span>
             </div>
           </div>
@@ -90,7 +97,10 @@ export default function SummaryCards({
         </div>
 
         {/* Token Flow & Cache Telemetry Card */}
-        <div className="flex flex-col justify-between rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs lg:col-span-7">
+        <div
+          className="reveal flex flex-col justify-between rounded-xl border border-slate-200/80 bg-white p-5 shadow-xs lg:col-span-7"
+          style={{ "--i": 1 } as React.CSSProperties}
+        >
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-baseline gap-2">
@@ -126,9 +136,11 @@ export default function SummaryCards({
             </div>
 
             <div className="mt-2 flex items-baseline gap-2">
-              <span className="num-tabular text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
-                {formatCompactNumber(totalTokens)}
-              </span>
+              <AnimatedNumber
+                value={totalTokens}
+                format={formatCompactNumber}
+                className="num-tabular text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl"
+              />
               <span className="text-xs font-medium text-slate-500">tokens processed</span>
             </div>
 
@@ -137,33 +149,33 @@ export default function SummaryCards({
               <div
                 role="img"
                 aria-label={`Token breakdown: ${cachePct.toFixed(1)}% cache read, ${inputPct.toFixed(1)}% input, ${outputPct.toFixed(1)}% output, ${cacheCreatePct.toFixed(1)}% cache create`}
-                className="flex h-2.5 w-full overflow-hidden rounded-full bg-slate-100"
+                className="clip-reveal flex h-2.5 w-full overflow-hidden rounded-full bg-slate-100"
               >
                 {cachePct > 0 && (
                   <div
                     style={{ width: `${cachePct}%` }}
-                    className="bg-emerald-500 transition-all duration-300"
+                    className="bg-emerald-500 transition-[width] duration-300"
                     title={`Cache Read: ${cachePct.toFixed(1)}%`}
                   />
                 )}
                 {inputPct > 0 && (
                   <div
                     style={{ width: `${inputPct}%` }}
-                    className="bg-blue-500 transition-all duration-300"
+                    className="bg-blue-500 transition-[width] duration-300"
                     title={`Input: ${inputPct.toFixed(1)}%`}
                   />
                 )}
                 {outputPct > 0 && (
                   <div
                     style={{ width: `${outputPct}%` }}
-                    className="bg-purple-500 transition-all duration-300"
+                    className="bg-purple-500 transition-[width] duration-300"
                     title={`Output: ${outputPct.toFixed(1)}%`}
                   />
                 )}
                 {cacheCreatePct > 0 && (
                   <div
                     style={{ width: `${cacheCreatePct}%` }}
-                    className="bg-amber-500 transition-all duration-300"
+                    className="bg-amber-500 transition-[width] duration-300"
                     title={`Cache Creation: ${cacheCreatePct.toFixed(1)}%`}
                   />
                 )}
