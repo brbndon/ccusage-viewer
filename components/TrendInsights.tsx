@@ -165,8 +165,8 @@ export default function TrendInsights({
           <p className="num-tabular text-[11px] text-slate-500">
             {projecting
               ? `${money(outlook.monthToDate)} so far · ${outlook.daysLeft} ${outlook.daysLeft === 1 ? "day" : "days"} left at the 7-day pace`
-              : `Average of the last ${outlook.runRateDays} days × 30. ${
-                  outlook.current ? "Scan from the 1st for a month-end projection." : "Projections need a range that ends this month."
+              : `Average of the last ${outlook.runRateDays} ${outlook.runRateDays === 1 ? "day" : "days"} × 30. ${
+                  outlook.current ? "Scan from the 1st for a month-end projection." : "Projections need a range that runs through today."
                 }`}
           </p>
           {projecting && outlook.projected > 0 && (

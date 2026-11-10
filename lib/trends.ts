@@ -13,7 +13,10 @@ const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 export function parseDay(value: string): Date | null {
   const m = DAY_RE.exec(value);
   if (!m) return null;
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(y, mo - 1, d);
+  // Reject dates JS would silently roll over (2026-02-30 -> March 2).
+  return date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d ? date : null;
 }
 
 export function dayKey(date: Date): string {
@@ -79,7 +82,7 @@ function sum(points: DayPoint[], field: "cost" | "tokens"): number {
 
 /** The series without today when today is its last day: a partial day skews averages and trends. */
 export function completedDays(series: DayPoint[], today = new Date()): DayPoint[] {
-  if (series.length > 2 && series[series.length - 1].date === dayKey(today)) return series.slice(0, -1);
+  if (series.length > 1 && series[series.length - 1].date === dayKey(today)) return series.slice(0, -1);
   return series;
 }
 
@@ -112,7 +115,7 @@ export function compareWindows(series: DayPoint[]): WindowComparison | null {
 export interface MonthOutlook {
   /** True when the series covers the month's first day, so month-to-date is complete. */
   complete: boolean;
-  /** True when the series ends in the current month; a past month has nothing left to project. */
+  /** True when the series runs through today; a scan that ended earlier has nothing current to project. */
   current: boolean;
   monthLabel: string;
   monthToDate: number;
@@ -144,7 +147,7 @@ export function monthOutlook(series: DayPoint[], today = new Date()): MonthOutlo
 
   return {
     complete: parseDay(series[0].date)! <= monthStart,
-    current: last.getFullYear() === today.getFullYear() && last.getMonth() === today.getMonth(),
+    current: series[series.length - 1].date === dayKey(today),
     monthLabel: last.toLocaleDateString("en-US", { month: "long" }),
     monthToDate,
     projected: monthToDate + pace * daysLeft,

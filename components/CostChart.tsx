@@ -19,9 +19,10 @@ import { useReducedMotion } from "@/lib/use-reduced-motion";
 
 /** Trailing-average window per view, sized to smooth one natural cycle. */
 const TREND_WINDOW: Record<ViewKey, { size: number; label: string }> = {
-  daily: { size: 7, label: "7-day avg" },
-  weekly: { size: 4, label: "4-week avg" },
-  monthly: { size: 3, label: "3-month avg" },
+  // Rows skip periods with no usage, so these average active periods, not calendar ones.
+  daily: { size: 7, label: "7-active-day avg" },
+  weekly: { size: 4, label: "4-active-week avg" },
+  monthly: { size: 3, label: "3-active-month avg" },
   session: { size: 5, label: "5-session avg" },
   blocks: { size: 5, label: "5-block avg" },
 };
