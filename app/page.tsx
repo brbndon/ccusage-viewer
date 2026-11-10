@@ -10,6 +10,8 @@ import SummaryCards from "@/components/SummaryCards";
 import CostChart from "@/components/CostChart";
 import ExportActions from "@/components/ExportActions";
 import AgentBreakdown from "@/components/AgentBreakdown";
+import TrendInsights from "@/components/TrendInsights";
+import ActivityHeatmap from "@/components/ActivityHeatmap";
 import PeriodTable from "@/components/PeriodTable";
 import SetupBanner from "@/components/SetupBanner";
 import type {
@@ -165,6 +167,39 @@ async function fetchSetup(): Promise<SetupState> {
     // Status is advisory; if it cannot be reached, let the scan report errors.
     return { status: "ready" };
   }
+}
+
+/** Three usage bars that breathe out of phase; decorative. */
+function LogoMark() {
+  return (
+    <svg viewBox="0 0 32 32" className="h-9 w-9 shrink-0" aria-hidden="true">
+      <defs>
+        <linearGradient id="logo-bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#1d4ed8" />
+          <stop offset="100%" stopColor="#0ea5e9" />
+        </linearGradient>
+      </defs>
+      <rect width="32" height="32" rx="9" fill="url(#logo-bg)" />
+      {[
+        { x: 8, h: 9 },
+        { x: 14, h: 15 },
+        { x: 20, h: 12 },
+      ].map(({ x, h }, i) => (
+        <rect
+          key={x}
+          x={x}
+          y={24 - h}
+          width="4"
+          height={h}
+          rx="2"
+          fill="white"
+          fillOpacity={0.75 + i * 0.1}
+          className="logo-bar"
+          style={{ "--i": i } as React.CSSProperties}
+        />
+      ))}
+    </svg>
+  );
 }
 
 function ScanSkeleton() {
@@ -550,21 +585,30 @@ export default function Home() {
       scanQuery.providers.includes("antigravity"));
 
   return (
-    <main className="mx-auto flex max-w-6xl flex-col gap-6 p-6">
+    <main className="relative isolate mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">
+      {/* Ambient glow behind the header only, so data never sits on moving color. */}
+      <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 -top-24 -z-10 h-96 overflow-hidden">
+        <div className="ambient-blob absolute left-[8%] top-0 h-72 w-72 rounded-full bg-blue-300/25 blur-3xl" />
+        <div className="ambient-blob absolute right-[12%] top-10 h-64 w-80 rounded-full bg-sky-200/40 blur-3xl [animation-delay:-8s]" />
+      </div>
+
       {/* Studio Header */}
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              ccusage Studio
-            </h1>
-            <span className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-semibold text-slate-600 shadow-2xs">
-              local
-            </span>
+      <header className="reveal flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <LogoMark />
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+                ccusage Studio
+              </h1>
+              <span className="rounded-md border border-slate-200 bg-white/80 px-2 py-0.5 text-xs font-semibold text-slate-600 shadow-2xs">
+                local
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Spend, trends, and habits across your coding agents, read from local <code>ccusage</code> data.
+            </p>
           </div>
-          <p className="text-xs text-slate-500">
-            Scanning local LLM provider usage across models via <code>ccusage</code> CLI.
-          </p>
         </div>
 
         {scanCancelled && !loading ? (
@@ -573,7 +617,7 @@ export default function Home() {
           </div>
         ) : lastDurationSec !== null && !loading ? (
           <div className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            <span className="live-dot h-1.5 w-1.5 rounded-full bg-emerald-500" />
             <span>Scan took {formatElapsed(lastDurationSec)}</span>
             {lastEngine && (
               <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-600">
@@ -619,7 +663,7 @@ export default function Home() {
       )}
 
       {loading && (
-        <div>
+        <div className="reveal">
           <ScanProgress
             view={scanQuery.view}
             since={scanQuery.since}
@@ -714,16 +758,12 @@ export default function Home() {
       {data && data.rows.length > 0 && (
         <div
           aria-busy={loading}
-          className={
-            loading
-              ? "opacity-60 saturate-50"
-              : undefined
-          }
+          className={`results-dim ${loading ? "opacity-60 saturate-50" : ""}`}
         >
           <div className="flex flex-col gap-6">
             {/* Model Filter Bar */}
             {allModels.length > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-xs">
+              <div className="reveal flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-xs">
                 <div className="flex items-center gap-3">
                   <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                     Filter Models:
@@ -886,9 +926,21 @@ export default function Home() {
                   scannedAt={data.scannedAt}
                   periodCount={displayRows.length}
                 />
-                <AgentBreakdown rows={displayRows} view={data.view} />
-                <CostChart rows={displayRows} view={data.view} />
-                <PeriodTable rows={displayRows} totals={displayTotals} view={data.view} />
+                <TrendInsights rows={displayRows} view={data.view} range={lastSuccessfulRange} />
+                <div className="reveal" style={{ "--i": 3 } as React.CSSProperties}>
+                  <CostChart rows={displayRows} view={data.view} />
+                </div>
+                {data.view === "daily" && (
+                  <div className="reveal" style={{ "--i": 4 } as React.CSSProperties}>
+                    <ActivityHeatmap rows={displayRows} range={lastSuccessfulRange} />
+                  </div>
+                )}
+                <div className="reveal" style={{ "--i": 5 } as React.CSSProperties}>
+                  <AgentBreakdown rows={displayRows} view={data.view} />
+                </div>
+                <div className="reveal" style={{ "--i": 6 } as React.CSSProperties}>
+                  <PeriodTable rows={displayRows} totals={displayTotals} view={data.view} />
+                </div>
               </>
             )}
 

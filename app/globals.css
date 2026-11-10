@@ -84,3 +84,149 @@ input:focus-visible {
     opacity: 0.8;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Motion layer. Results arrive once per scan, so sections get a short staggered
+ * entrance; set `--i` on the element itself for its slot in the stagger.
+ * Entrances animate transform/opacity/clip-path and have a reduced-motion variant.
+ * Entrances use `backwards` fill, never `both`/`forwards`: a finished transform
+ * animation that keeps filling leaves a stacking context behind, which traps
+ * z-indexed popovers (the model filter) underneath later sections.
+ * ------------------------------------------------------------------------- */
+
+@keyframes reveal-rise {
+  from { opacity: 0; transform: translateY(10px); }
+}
+
+.reveal {
+  animation: reveal-rise 420ms var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+
+/* Left-to-right wipe for bars and sparklines. */
+@keyframes clip-wipe {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+.clip-reveal {
+  animation: clip-wipe 700ms var(--ease-out) 120ms backwards;
+}
+
+/* Proportional fill: grows from the left on mount, then glides between values. */
+@keyframes bar-grow {
+  from { transform: scaleX(0); }
+}
+
+.bar-fill {
+  transform: scaleX(var(--fill, 0));
+  transform-origin: left center;
+  transition: transform 300ms var(--ease-out);
+  animation: bar-grow 700ms var(--ease-out) 150ms backwards;
+}
+
+/* Column bars rising from the baseline. */
+@keyframes grow-up {
+  from { transform: scaleY(0); }
+}
+
+.grow-up {
+  transform-origin: bottom center;
+  animation: grow-up 500ms var(--ease-out) backwards;
+  animation-delay: calc(200ms + var(--i, 0) * 40ms);
+}
+
+/* Small markers settling in one after another. */
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.6); }
+}
+
+.pop-in {
+  animation: pop-in 320ms var(--ease-out) backwards;
+  animation-delay: calc(200ms + var(--i, 0) * 30ms);
+}
+
+/* Heatmap cells: delay set inline per column. */
+.heat-cell {
+  animation: pop-in 360ms var(--ease-out) backwards;
+  transition: transform 120ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .heat-cell:hover {
+    transform: scale(1.2);
+  }
+}
+
+/* "Fresh data" indicator: a soft ring pulsing out of a status dot, a few times per scan. */
+@keyframes live-ping {
+  0% { transform: scale(1); opacity: 0.55; }
+  80%, 100% { transform: scale(2.6); opacity: 0; }
+}
+
+.live-dot {
+  position: relative;
+}
+
+.live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  animation: live-ping 2.4s var(--ease-out) 3;
+}
+
+/* Ambient header glow: slow drift, purely decorative, never behind data. */
+@keyframes ambient-drift {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(6%, 4%, 0) scale(1.08); }
+  100% { transform: translate3d(-4%, 2%, 0) scale(0.96); }
+}
+
+.ambient-blob {
+  animation: ambient-drift 22s var(--ease-in-out) infinite alternate;
+}
+
+/* Logo bars breathing at different phases, a few cycles on load. */
+@keyframes logo-bar {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.55); }
+}
+
+.logo-bar {
+  transform-box: fill-box;
+  transform-origin: bottom center;
+  animation: logo-bar 2.8s var(--ease-in-out) 3;
+  animation-delay: calc(var(--i, 0) * -0.9s);
+}
+
+/* Results dim while a rescan runs over them. */
+.results-dim {
+  transition: opacity 250ms var(--ease-out), filter 250ms var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Keep fades that aid comprehension; drop movement, wipes, and loops. */
+  .reveal {
+    animation: reveal-fade 200ms ease backwards;
+  }
+  .clip-reveal,
+  .bar-fill,
+  .grow-up,
+  .pop-in,
+  .heat-cell,
+  .live-dot::after,
+  .ambient-blob,
+  .logo-bar {
+    animation: none;
+  }
+  .bar-fill,
+  .heat-cell {
+    transition: none;
+  }
+}
+
+@keyframes reveal-fade {
+  from { opacity: 0; }
+}

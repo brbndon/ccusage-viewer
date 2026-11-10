@@ -20,6 +20,8 @@ import {
   type ViewKey,
 } from "@/lib/ccusage";
 import { formatCompactNumber, formatChartMoney } from "@/lib/model-meta";
+import { useReducedMotion } from "@/lib/use-reduced-motion";
+import AnimatedNumber from "@/components/AnimatedNumber";
 
 type Metric = "cost" | "tokens";
 
@@ -132,6 +134,7 @@ export default function AgentBreakdown({
   view: ViewKey;
 }) {
   const [metric, setMetric] = useState<Metric>("cost");
+  const reduced = useReducedMotion();
   const agents = useMemo(() => rollupAgents(rows), [rows]);
   const showChart = view in VIEW_PREFIX;
 
@@ -195,9 +198,13 @@ export default function AgentBreakdown({
 
       <div className={`mt-4 grid grid-cols-1 gap-6 ${showChart ? "lg:grid-cols-12" : ""}`}>
         <div className={showChart ? "lg:col-span-4" : ""}>
-          <p className="num-tabular text-3xl font-bold tracking-tight text-slate-900">
-            {formatMetric(metric, total, estimated)}
-          </p>
+          {/* Keyed on metric so cost and tokens each count up from zero. */}
+          <AnimatedNumber
+            key={metric}
+            value={total}
+            format={(n) => formatMetric(metric, n, estimated)}
+            className="num-tabular block text-3xl font-bold tracking-tight text-slate-900"
+          />
           <p className="text-xs text-slate-500">
             {rows.length} {periodNoun(view, rows.length)} · {agents.length}{" "}
             {agents.length === 1 ? "agent" : "agents"}
@@ -223,7 +230,13 @@ export default function AgentBreakdown({
                       {formatMetric(metric, valueOf(a), a.costEstimated)}
                     </span>
                   </div>
-                  <p className="num-tabular mt-0.5 pl-4.5 text-xs text-slate-500">
+                  <div className="mt-1.5 ml-4.5 h-1 overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className="bar-fill h-full rounded-full"
+                      style={{ "--fill": share / 100, backgroundColor: colorOf(a.agent) } as React.CSSProperties}
+                    />
+                  </div>
+                  <p className="num-tabular mt-1 pl-4.5 text-xs text-slate-500">
                     {metric === "cost" && estimated ? "≈ " : ""}{share.toFixed(1)}% of {metric === "cost" ? "spend" : "tokens"} ·{" "}
                     {metric === "cost"
                       ? `${formatCompactNumber(a.tokens)} tokens`
@@ -275,6 +288,9 @@ export default function AgentBreakdown({
                       fillOpacity={0.1}
                       dot={chartData.length === 1 ? { r: 4, strokeWidth: 0, fill: colorOf(key), fillOpacity: 1 } : false}
                       activeDot={{ r: 4, stroke: "#ffffff", strokeWidth: 2 }}
+                      isAnimationActive={!reduced}
+                      animationDuration={800}
+                      animationEasing="ease-out"
                     />
                   ))}
                 </AreaChart>
