@@ -42,3 +42,6 @@ next-env.d.ts
 
 # agent plan/spec scratch files (never commit)
 /docs/superpowers/
+
+# last saved scan (private usage data)
+/.cache/
