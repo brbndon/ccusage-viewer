@@ -3,7 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CcusageRow } from "@/lib/ccusage";
 import { formatCompactNumber, formatMoney } from "@/lib/model-meta";
-import { WEEKDAYS, dailySeries, heatmapWeeks, parseDay, type HeatmapCell } from "@/lib/trends";
+import {
+  WEEKDAYS,
+  completedDays,
+  dailySeries,
+  heatmapWeeks,
+  parseDay,
+  streaks,
+  weekdayAverages,
+  type HeatmapCell,
+} from "@/lib/trends";
 
 /** Sequential blue ramp, lightest to darkest; level 0 is "no usage". */
 const LEVEL_CLASSES = [
@@ -37,6 +46,16 @@ function describeDay(cell: HeatmapCell): string {
   return `${date}: ${cell.costEstimated ? "≈ " : ""}${formatMoney(cell.cost)} · ${formatCompactNumber(cell.tokens)} tokens`;
 }
 
+function Stat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="min-w-0 rounded-lg border border-slate-200/80 bg-slate-50/60 px-3.5 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="num-tabular mt-1 truncate text-xl font-bold tracking-tight text-slate-900">{value}</p>
+      <p className="num-tabular truncate text-[11px] text-slate-500">{detail}</p>
+    </div>
+  );
+}
+
 export default function ActivityHeatmap({
   rows,
   range,
@@ -56,9 +75,10 @@ export default function ActivityHeatmap({
     if (el) el.scrollLeft = el.scrollWidth;
   }, [weeks.length]);
 
+  const estimated = series.some((p) => p.costEstimated);
   const size = cellSizeFor(weeks.length);
   const gap = size >= 20 ? 4 : 3;
-  const { activeDays, peak, topDays, monthLabels } = useMemo(() => {
+  const { activeDays, peak, topDays, monthLabels, totalCost, totalTokens, streak, weekdayAvg } = useMemo(() => {
     const peak = series.reduce((best, p) => (p.cost > best.cost ? p : best), series[0]);
     const topDays = series
       .filter((p) => p.cost > 0)
@@ -72,7 +92,17 @@ export default function ActivityHeatmap({
       const prevMonth = prev ? parseDay(prev.date)!.getMonth() : -1;
       return date.getMonth() !== prevMonth ? date.toLocaleDateString("en-US", { month: "short" }) : "";
     });
-    return { activeDays: series.filter((p) => p.tokens > 0).length, peak, topDays, monthLabels };
+    return {
+      activeDays: series.filter((p) => p.tokens > 0).length,
+      peak,
+      topDays,
+      monthLabels,
+      totalCost: series.reduce((acc, p) => acc + p.cost, 0),
+      totalTokens: series.reduce((acc, p) => acc + p.tokens, 0),
+      streak: streaks(series),
+      // Averages skip an unfinished today, as the Trends section does.
+      weekdayAvg: weekdayAverages(completedDays(series)),
+    };
   }, [series, weeks]);
   // Hover only changes the readout, so the (possibly thousands of) cells are built once per data change.
   const columns = useMemo(() => {
@@ -102,6 +132,7 @@ export default function ActivityHeatmap({
   }, [weeks, monthLabels, peak, size, gap]);
 
   if (weeks.length === 0) return null;
+  const maxWeekdayAvg = Math.max(...weekdayAvg);
 
   return (
     <section
@@ -124,10 +155,36 @@ export default function ActivityHeatmap({
         </p>
       </div>
 
-      <div className="mt-4 flex flex-col gap-6 lg:flex-row lg:items-start">
+      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat
+          label="Active days"
+          value={`${activeDays} of ${series.length}`}
+          detail={`${Math.round((activeDays / series.length) * 100)}% of days had usage`}
+        />
+        <Stat
+          label="Avg / active day"
+          value={activeDays > 0 ? `${estimated ? "≈ " : ""}${formatMoney(totalCost / activeDays)}` : "—"}
+          detail={activeDays > 0 ? `${formatCompactNumber(totalTokens / activeDays)} tokens` : "No usage in range"}
+        />
+        <Stat
+          label="Peak day"
+          value={peak.cost > 0 ? `${estimated ? "≈ " : ""}${formatMoney(peak.cost)}` : "—"}
+          detail={
+            peak.cost > 0
+              ? parseDay(peak.date)!.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
+              : "No spend in range"
+          }
+        />
+        <Stat
+          label="Longest streak"
+          value={`${streak.longest} ${streak.longest === 1 ? "day" : "days"}`}
+          detail={`${streak.current} ${streak.current === 1 ? "day" : "days"} current`}
+        />
+      </div>
+
+      <div className="mt-5 flex flex-col gap-6 lg:flex-row lg:items-start">
         <div className="min-w-0">
-          <div ref={scrollRef} className="overflow-x-auto pb-1">
-          <div className="inline-flex gap-2">
+          <div className="flex items-start gap-2">
             <div className="flex flex-col pt-4 text-[10px] font-medium text-slate-500" style={{ gap }} aria-hidden="true">
               {WEEKDAYS.map((d, i) => (
                 <span key={d} className="flex items-center" style={{ height: size }}>
@@ -135,16 +192,39 @@ export default function ActivityHeatmap({
                 </span>
               ))}
             </div>
+            <div ref={scrollRef} className="min-w-0 overflow-x-auto pb-1">
+              <div
+                className="inline-flex"
+                style={{ gap }}
+                role="img"
+                aria-label={`Daily activity calendar: ${activeDays} of ${series.length} days active${peak.cost > 0 ? `; peak ${describeDay({ ...peak, level: 4 })}` : ""}`}
+                onMouseLeave={() => setFocused(null)}
+              >
+                {columns}
+              </div>
+            </div>
+            {/* Average spend for each weekday row, lined up with the grid. */}
             <div
-              className="flex"
+              className="flex shrink-0 flex-col border-l border-slate-100 pl-2 pt-4"
               style={{ gap }}
               role="img"
-              aria-label={`Daily activity calendar: ${activeDays} of ${series.length} days active${peak.cost > 0 ? `; peak ${describeDay({ ...peak, level: 4 })}` : ""}`}
-              onMouseLeave={() => setFocused(null)}
+              aria-label={`Average spend by weekday: ${WEEKDAYS.map((d, i) => `${d} ${formatMoney(weekdayAvg[i])}`).join(", ")}`}
             >
-              {columns}
+              {weekdayAvg.map((avg, i) => (
+                <div key={WEEKDAYS[i]} className="flex items-center gap-1.5" style={{ height: size }} title={`${WEEKDAYS[i]}: ${formatMoney(avg)} on average`}>
+                  <div className="h-1.5 w-12 overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className={`bar-fill h-full rounded-full ${avg === maxWeekdayAvg && avg > 0 ? "bg-blue-600" : "bg-slate-300"}`}
+                      style={{ "--fill": maxWeekdayAvg > 0 ? avg / maxWeekdayAvg : 0 } as React.CSSProperties}
+                    />
+                  </div>
+                  <span className="num-tabular w-11 text-[10px] leading-none text-slate-500" aria-hidden="true">
+                    {formatMoney(avg)}
+                  </span>
+                </div>
+              ))}
+              <p className="mt-1 text-[10px] leading-3 text-slate-500" aria-hidden="true">avg / weekday</p>
             </div>
-          </div>
           </div>
           <div className="mt-3 flex items-center gap-1.5 text-[11px] text-slate-500" aria-hidden="true">
             <span>Less</span>

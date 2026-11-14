@@ -22,6 +22,7 @@ Open http://localhost:3000. On first launch the viewer pre-selects the agents it
 - **Default providers** (everything except Antigravity, which is slow) run one `ccusage <provider> <view>` per provider in parallel. If one provider fails, the rest still render with a warning.
 - **All incl. slow** runs a single unified scan, with `--by-agent` for Daily, Weekly, and Monthly.
 - Results can be filtered by model and exported as CSV or a Markdown summary.
+- **Saved scan**: every successful scan replaces `.cache/last-scan.json` (git-ignored, one scan only). The page opens on it, labelled with when it was taken, so you can read your usage without scanning; press **Scan Usage** to update it. When the server starts it repeats that last scan in the background (rolling ranges like "30 days" move forward to today), or on first run scans the agents it finds with a 30-day range. The page picks up the refreshed scan when it finishes. `GET /api/cache` returns `{ cached, refreshing }`.
 
 ### API
 

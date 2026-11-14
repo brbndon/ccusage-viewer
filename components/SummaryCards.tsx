@@ -10,6 +10,14 @@ interface SummaryCardsProps {
   periodCount?: number;
 }
 
+/** Time of day for today's scans; the date too for an older (saved) one. */
+function formatScannedAt(scannedAt: string): string {
+  const scanned = new Date(scannedAt);
+  const time = scanned.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (scanned.toDateString() === new Date().toDateString()) return time;
+  return `${scanned.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+}
+
 export default function SummaryCards({
   totals,
   scannedAt,
@@ -60,7 +68,7 @@ export default function SummaryCards({
               </span>
               <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
                 <span className="live-dot h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                <span>Scanned {new Date(scannedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <span>Scanned {formatScannedAt(scannedAt)}</span>
               </div>
             </div>
 

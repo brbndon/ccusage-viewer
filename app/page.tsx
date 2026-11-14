@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EmptyState from "@/components/EmptyState";
-import ScanControls, { rangeForPreset } from "@/components/ScanControls";
+import ScanControls from "@/components/ScanControls";
 import ScanProgress, {
   formatElapsed,
   type ProviderProgress,
@@ -14,6 +14,9 @@ import TrendInsights from "@/components/TrendInsights";
 import ActivityHeatmap from "@/components/ActivityHeatmap";
 import PeriodTable from "@/components/PeriodTable";
 import SetupBanner from "@/components/SetupBanner";
+import SavedScanNotice from "@/components/SavedScanNotice";
+import type { CachedScan } from "@/lib/scan-cache";
+import { rangeForPreset } from "@/lib/date-presets";
 import type {
   CcusageRow,
   ProviderSlug,
@@ -40,6 +43,9 @@ const DEFAULT_PROVIDERS: ProviderSlug[] = PROVIDERS.filter(
   (p) => p !== "antigravity"
 );
 const PREFERENCES_KEY = "ccusage-viewer.preferences.v1";
+/** How often to check whether the startup refresh has finished, and when to give up (a scan's own budget). */
+const CACHE_POLL_MS = 3000;
+const CACHE_POLL_LIMIT_MS = 300_000;
 
 interface SavedPreferences {
   view: ViewKey;
@@ -257,6 +263,9 @@ export default function Home() {
   const [rechecking, setRechecking] = useState(false);
   const [setup, setSetup] = useState<SetupState>({ status: "checking" });
   const [providerProgress, setProviderProgress] = useState<ProviderProgress>({});
+  // When the scan on screen was loaded from disk; null once this session runs its own scan.
+  const [savedScanAt, setSavedScanAt] = useState<string | null>(null);
+  const [savedScanRefreshing, setSavedScanRefreshing] = useState(false);
 
   const [scanQuery, setScanQuery] = useState<{
     view: ViewKey;
@@ -274,6 +283,7 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const reqIdRef = useRef(0);
   const modelFilterRef = useRef<HTMLDetailsElement>(null);
+  const appliedSavedAtRef = useRef("");
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -349,6 +359,55 @@ export default function Home() {
       // Preferences are optional; storage can be disabled or full.
     }
   }, [preferencesLoaded, providers, view]);
+
+  const applySavedScan = useCallback((saved: CachedScan) => {
+    appliedSavedAtRef.current = saved.savedAt;
+    detectionRef.current.applied = true;
+    setView(saved.query.view);
+    setProviders(saved.query.providers);
+    setSince(saved.query.since);
+    setUntil(saved.query.until);
+    setScanQuery(saved.query);
+    setLastSuccessfulRange({ since: saved.query.since, until: saved.query.until });
+    setData(saved.scan);
+    setSelectedModels(breakdownModels(saved.scan.rows));
+    setLastEngine(saved.scan.engine ?? null);
+    setSavedScanAt(saved.scan.scannedAt);
+  }, []);
+
+  // Show the scan saved on disk so usage is visible without scanning. When the
+  // server is still refreshing it at startup, wait for that and show the update.
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const startedAt = Date.now();
+
+    async function load() {
+      try {
+        const res = await fetch("/api/cache");
+        if (!res.ok) return;
+        const body = (await res.json()) as { cached: CachedScan | null; refreshing: boolean };
+        // A scan started on this page always wins over anything saved.
+        if (cancelled || reqIdRef.current !== 0) return;
+        if (body.cached && body.cached.savedAt !== appliedSavedAtRef.current) {
+          applySavedScan(body.cached);
+        }
+        setSavedScanRefreshing(body.refreshing);
+        if (body.refreshing && Date.now() - startedAt < CACHE_POLL_LIMIT_MS) {
+          timer = window.setTimeout(load, CACHE_POLL_MS);
+        }
+      } catch {
+        // The saved scan is a convenience; the page works without it.
+      }
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [applySavedScan, preferencesLoaded]);
 
   useEffect(() => {
     function closeOnOutsidePointer(event: PointerEvent) {
@@ -444,6 +503,8 @@ export default function Home() {
         const done = body as ScanResponse;
         const durSec = Math.round((Date.now() - started) / 1000);
         setData(done);
+        setSavedScanAt(null);
+        setSavedScanRefreshing(false);
 
         // Select every model by default
         setSelectedModels(breakdownModels(done.rows));
@@ -660,6 +721,10 @@ export default function Home() {
         <p role="status" className="sr-only">
           {announcement}
         </p>
+      )}
+
+      {savedScanAt && !loading && !error && (
+        <SavedScanNotice scannedAt={savedScanAt} refreshing={savedScanRefreshing} />
       )}
 
       {loading && (
