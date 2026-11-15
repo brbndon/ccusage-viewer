@@ -53,6 +53,15 @@ export function dailySeries(
     entry.costEstimated ||= r.costEstimated === true;
     byDay.set(r.period, entry);
   }
+  return fillSeries(byDay, range, today);
+}
+
+/** The gap-free series behind {@link dailySeries}, from days already totalled by date. */
+export function fillSeries(
+  byDay: Map<string, DayPoint>,
+  range: { since: string; until: string },
+  today = new Date()
+): DayPoint[] {
   if (byDay.size === 0) return [];
 
   const keys = [...byDay.keys()].sort();
@@ -214,30 +223,28 @@ export function rollingAverage(values: number[], window: number): number[] {
 }
 
 export interface HeatmapCell extends DayPoint {
-  /** 0 = no usage, 1–4 = percentile band of active-day spend. */
+  /** 0 = no usage, 1–4 = percentile band of active-day tokens. */
   level: number;
 }
 
 /** Calendar grid: one column per week (Sunday first), padded with nulls. */
 export function heatmapWeeks(series: DayPoint[]): (HeatmapCell | null)[][] {
   if (series.length === 0) return [];
-  const active = series.filter((p) => p.cost > 0).map((p) => p.cost).sort((a, b) => a - b);
-  // Share of active days that cost strictly less, so ties share a band and the
+  const active = series.filter((p) => p.tokens > 0).map((p) => p.tokens).sort((a, b) => a - b);
+  // Share of active days with strictly fewer tokens, so ties share a band and the
   // darkest band is reachable even with only a few active days.
-  const belowCount = (cost: number) => {
+  const belowCount = (tokens: number) => {
     let lo = 0;
     let hi = active.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (active[mid] < cost) lo = mid + 1;
+      if (active[mid] < tokens) lo = mid + 1;
       else hi = mid;
     }
     return lo;
   };
-  const levelOf = (p: DayPoint) => {
-    if (p.cost <= 0) return p.tokens > 0 ? 1 : 0;
-    return 1 + Math.min(3, Math.floor((belowCount(p.cost) / active.length) * 4));
-  };
+  const levelOf = (p: DayPoint) =>
+    p.tokens <= 0 ? 0 : 1 + Math.min(3, Math.floor((belowCount(p.tokens) / active.length) * 4));
 
   const weeks: (HeatmapCell | null)[][] = [];
   let week: (HeatmapCell | null)[] = Array(parseDay(series[0].date)!.getDay()).fill(null);

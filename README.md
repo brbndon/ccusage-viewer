@@ -23,6 +23,7 @@ Open http://localhost:3000. On first launch the viewer pre-selects the agents it
 - **All incl. slow** runs a single unified scan, with `--by-agent` for Daily, Weekly, and Monthly.
 - Results can be filtered by model and exported as CSV or a Markdown summary.
 - **Saved scan**: every successful scan replaces `.cache/last-scan.json` (git-ignored, one scan only). The page opens on it, labelled with when it was taken, so you can read your usage without scanning; press **Scan Usage** to update it. When the server starts it repeats that last scan in the background (rolling ranges like "30 days" move forward to today), or on first run scans the agents it finds with a 30-day range. The page picks up the refreshed scan when it finishes. `GET /api/cache` returns `{ cached, refreshing }`.
+- **Token activity**: the dark year-long grid (Daily / Weekly / Cumulative) and its metrics come from a separate all-history daily scan of the agents found on this machine, saved in `.cache/activity.json`. It ignores the date range and model filter, and is rebuilt at server start and after each scan you run. *Longest session* is the longest first-to-last-activity span among agents that report session start times (idle time included). `GET /api/activity` serves it (`?refresh=1` rebuilds).
 
 ### API
 

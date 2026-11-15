@@ -995,11 +995,9 @@ export default function Home() {
                 <div className="reveal" style={{ "--i": 3 } as React.CSSProperties}>
                   <CostChart rows={displayRows} view={data.view} />
                 </div>
-                {data.view === "daily" && (
-                  <div className="reveal" style={{ "--i": 4 } as React.CSSProperties}>
-                    <ActivityHeatmap rows={displayRows} range={lastSuccessfulRange} />
-                  </div>
-                )}
+                <div className="reveal" style={{ "--i": 4 } as React.CSSProperties}>
+                  <ActivityHeatmap freshScanAt={savedScanAt ? null : data.scannedAt} />
+                </div>
                 <div className="reveal" style={{ "--i": 5 } as React.CSSProperties}>
                   <AgentBreakdown rows={displayRows} view={data.view} />
                 </div>

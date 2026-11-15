@@ -48,7 +48,7 @@ function isTimeout(err: unknown): boolean {
   return e?.killed === true || e?.code === "ETIMEDOUT";
 }
 
-async function runCcusage(
+export async function runCcusage(
   cliPath: string,
   args: string[],
   signal: AbortSignal

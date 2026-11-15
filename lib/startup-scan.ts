@@ -1,3 +1,4 @@
+import { refreshActivity } from "@/lib/activity";
 import { PROVIDERS, type ProviderSlug } from "@/lib/ccusage";
 import { detectProviders } from "@/lib/ccusage-server";
 import { DATE_PRESET_IDS, rangeForPreset } from "@/lib/date-presets";
@@ -54,6 +55,10 @@ async function paramsForRefresh(): Promise<ScanParams | null> {
 export async function refreshCacheOnStartup(): Promise<void> {
   if (isCacheRefreshing()) return;
   setCacheRefreshing(true);
+  // The activity graph's all-history data refreshes alongside the saved scan.
+  refreshActivity().catch((err) =>
+    console.warn("[ccusage-viewer] startup activity scan failed:", err)
+  );
   try {
     const params = await paramsForRefresh();
     if (!params) return;
